@@ -628,6 +628,7 @@ async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_n
     try: await ch.send(txt)
     except Exception as e: log.warning(f"Sub ping failed: {e}")
 # -------------------- Part 2/4 — prefs, resolve, boot/offline, seed, events --------------------
+# -------------------- Part 2/4 — prefs, resolve, boot/offline, seed, events --------------------
 
 # Per-user timer view prefs (used by slash /timers)
 async def get_user_shown_categories(guild_id: int, user_id: int) -> List[str]:
@@ -929,6 +930,7 @@ async def on_member_remove(member: discord.Member):
     if member.guild:
         _guild_auth_cache.pop(member.guild.id, None)
 # -------------------- Part 3/4 — loops, auth-aware message flow, reactions, blacklist, perms --------------------
+# -------------------- Part 3/4 — loops, auth-aware message flow, reactions, blacklist, perms --------------------
 
 # -------- BLACKLIST HELPERS & GLOBAL CHECK --------
 async def is_blacklisted(guild_id: int, user_id: int) -> bool:
@@ -1026,7 +1028,13 @@ async def timers_tick():
         due_rows = await c.fetchall()
 
     for bid, gid, ch_id, name, next_ts, cat in due_rows:
-        # mute noisy spam that was already due before boot to avoid duplicate messages
+        # avoid duplicate spam for bosses that were due before boot and already reported in boot_offline_processing
+        if bid in muted_due_on_boot:
+            try:
+                muted_due_on_boot.remove(bid)
+            except KeyError:
+                pass
+            continue
         if not (prev < int(next_ts) <= now):
             continue
         key = f"{gid}:{bid}:WINDOW:{next_ts}"
@@ -1179,7 +1187,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
             member = guild.get_member(payload.user_id) or await guild.fetch_member(payload.user_id)
             async with aiosqlite.connect(DB_PATH) as db:
                 c = await db.execute("SELECT role_id FROM rr_map WHERE panel_message_id=? AND emoji=?", (payload.message_id, emoji_str))
-                row = await db.fetchone()
+                row = await c.fetchone()   # <-- fixed (was db.fetchone())
             if not row:
                 return
             role = guild.get_role(int(row[0]))
@@ -1187,275 +1195,6 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
                 await member.remove_roles(role, reason="Reaction role opt-out")
         except Exception as e:
             log.warning(f"Remove reaction-role failed: {e}")
-# -------------------- Part 4/4 — commands, slash, errors, shutdown, run --------------------
-
-# -------- HELP (tidy, no auth-config details) --------
-@bot.command(name="help")
-async def help_cmd(ctx):
-    p = await get_guild_prefix(bot, ctx.message)
-    lines = [
-        f"**Boss Tracker — Commands**",
-        "",
-        f"**Essentials**",
-        f"• Timers: `{p}timers`  • Intervals: `{p}intervals`",
-        f"• Quick reset: `{p}<BossOrAlias>`  (e.g., `{p}snorri`)",
-        "",
-        f"**Boss Ops**",
-        f"• Add: `{p}boss add \"Name\" <spawn_m> <window_m> [#chan] [pre_m] [category]`",
-        f"• Killed: `{p}boss killed \"Name\"` • Increase/Reduce: `{p}boss increase|reduce \"Name\" <m>`",
-        f"• Idle/Nada: `{p}boss nada \"Name\"` • All Idle: `{p}boss nadaall`",
-        f"• Edit: `{p}boss edit \"Name\" <spawn_minutes|window_minutes|pre_announce_min|name|category|sort_key> <value>`",
-        f"• Channel routing: `{p}boss setchannel \"Name\" #chan` • All: `{p}boss setchannelall #chan` • By category: `{p}boss setchannelcat \"Category\" #chan`",
-        f"• Role for reset: `{p}boss setrole @Role` • Clear: `{p}boss setrole none` • Per-boss: `{p}boss setrole \"Name\" @Role`",
-        f"• Aliases: `{p}boss alias add|remove \"Name\" \"alias\"` • List: `{p}boss aliases \"Name\"`",
-        "",
-        f"**Subscriptions**",
-        f"• Panels channel: `{p}setsubchannel #panels` • Refresh: `{p}showsubscriptions`",
-        f"• Ping channel: `{p}setsubpingchannel #pings`",
-        "",
-        f"**Server Settings**",
-        f"• Announce: `{p}setannounce #chan` • Category route: `{p}setannounce category \"Category\" #chan`",
-        f"• ETA: `{p}seteta on|off` • Colors: `{p}setcatcolor <Category> <#hex>`",
-        f"• Heartbeat: `{p}setuptime <minutes>` • HB channel: `{p}setheartbeatchannel #chan`",
-        f"• Prefix: `{p}setprefix <new>`",
-        f"• **Pre-announce**: per-boss `{p}setpreannounce \"Name\" <m|off>` • per-category `{p}setpreannounce category \"Category\" <m|off>` • all `{p}setpreannounce all <m|off>`",
-        "",
-        f"**Status**",
-        f"• `{p}status` • `{p}health`",
-        "",
-        f"**Slash**",
-        f"• `/timers` (ephemeral with per-user category toggles)",
-        f"• `/roles_panel channel:<#> title:<...> pairs:\"😀 @Role, 🔔 @Role\"`",
-    ]
-    text = "\n".join(lines)
-    if len(text) > 1990: text = text[:1985] + "…"
-    if can_send(ctx.channel): await ctx.send(text)
-
-# -------- STATUS / HEALTH --------
-@bot.command(name="status")
-async def status_cmd(ctx):
-    gid = ctx.guild.id; p = await get_guild_prefix(bot, ctx.message)
-    async with aiosqlite.connect(DB_PATH) as db:
-        c = await db.execute(
-            "SELECT COALESCE(prefix, ?), default_channel, sub_channel_id, sub_ping_channel_id, "
-            "COALESCE(uptime_minutes, ?), heartbeat_channel_id, COALESCE(show_eta,0) "
-            "FROM guild_config WHERE guild_id=?",
-            (DEFAULT_PREFIX, DEFAULT_UPTIME_MINUTES, gid)
-        )
-        r = await c.fetchone()
-        prefix, ann_id, sub_id, sub_ping_id, hb_min, hb_ch, show_eta = (r if r else (DEFAULT_PREFIX, None, None, None, DEFAULT_UPTIME_MINUTES, None, 0))
-        c = await db.execute("SELECT COUNT(*) FROM bosses WHERE guild_id=?", (gid,))
-        boss_count = (await c.fetchone())[0]
-        now_n = now_ts()
-        c = await db.execute("SELECT next_spawn_ts FROM bosses WHERE guild_id=?", (gid,))
-        times = [int(x[0]) for x in await c.fetchall()]
-        due = sum(1 for t in times if t <= now_n)
-        nada = sum(1 for t in times if (now_n - t) > NADA_GRACE_SECONDS)
-        c = await db.execute("SELECT category,channel_id FROM category_channels WHERE guild_id=?", (gid,))
-        cat_map = {row[0]: row[1] for row in await c.fetchall()}
-        c = await db.execute("SELECT category FROM category_colors WHERE guild_id=?", (gid,))
-        overridden = sorted({norm_cat(row[0]) for row in await c.fetchall()})
-    last_start = await meta_get("last_startup_ts")
-    hb_label = "off" if int(hb_min) <= 0 else f"every {int(hb_min)}m"
-    def ch(idv): return f"<#{idv}>" if idv else "—"
-    lines = [
-        f"**Status**",
-        f"Prefix: `{prefix}` (change: `{p}setprefix <new>`) ",
-        f"Announce channel (global): {ch(ann_id)}",
-        f"Category overrides: " + (", ".join(f"{k}→{ch(v)}" for k,v in cat_map.items()) if cat_map else "none"),
-        f"Subscription panels: {ch(sub_id)} • Subscription pings: {ch(sub_ping_id)}",
-        f"Heartbeat: {hb_label} • Channel: {ch(hb_ch)}",
-        f"UTC ETA: {'on' if show_eta else 'off'}",
-        f"Bosses: {boss_count} • Due now: {due} • -Nada: {nada}",
-        f"Color overrides: {', '.join(overridden) if overridden else 'none'}",
-        f"Last startup: {ts_to_utc(int(last_start)) if last_start and last_start.isdigit() else '—'}",
-    ]
-    await ctx.send("\n".join(lines))
-
-@bot.command(name="health")
-@commands.has_permissions(administrator=True)
-async def health_cmd(ctx):
-    required = {"bosses","guild_config","meta","category_colors","subscription_emojis","subscription_members",
-                "boss_aliases","category_channels","user_timer_prefs","subscription_panels","rr_panels","rr_map","blacklist"}
-    async with aiosqlite.connect(DB_PATH) as db:
-        c = await db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        present = {row[0] for row in await c.fetchall()}
-        c = await db.execute("SELECT COUNT(*) FROM guild_config WHERE guild_id=?", (ctx.guild.id,))
-        cfg_rows = (await c.fetchone())[0]
-    missing = sorted(list(required - present))
-    tick_age = now_ts() - _last_timer_tick_ts if _last_timer_tick_ts else None
-    lines = [
-        "**Health**",
-        f"DB: `{DB_PATH}`",
-        f"Tables OK: {'yes' if not missing else 'no'}{'' if not missing else ' (missing: ' + ', '.join(missing) + ')'}",
-        f"Timers loop: {'running' if timers_tick.is_running() else 'stopped'}",
-        f"Heartbeat loop: {'running' if uptime_heartbeat.is_running() else 'stopped'}",
-        f"Last timer tick: {ts_to_utc(_last_timer_tick_ts) if _last_timer_tick_ts else '—'}"
-        + (f" ({human_ago(tick_age)})" if tick_age is not None else ""),
-        f"guild_config row present: {'yes' if cfg_rows > 0 else 'no'}",
-    ]
-    await ctx.send("\n".join(lines))
-
-# -------- SHOW ETA FLAG --------
-async def get_show_eta(guild_id: int) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        c = await db.execute("SELECT COALESCE(show_eta,0) FROM guild_config WHERE guild_id=?", (guild_id,))
-        r = await c.fetchone()
-        return bool(r and int(r[0]) == 1)
-
-# -------- TIMERS (text) --------
-@bot.command(name="timers")
-async def timers_cmd(ctx):
-    gid = ctx.guild.id; show_eta = await get_show_eta(gid)
-    async with aiosqlite.connect(DB_PATH) as db:
-        c = await db.execute("SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=?", (gid,))
-        rows = await c.fetchall()
-    if not rows: return await ctx.send("No timers. Add with `boss add \"Name\" <spawn_m> <window_m> [#chan] [pre_m] [cat]`.")
-    now = now_ts()
-    grouped: Dict[str, List[tuple]] = {k: [] for k in CATEGORY_ORDER}
-    for name, ts, cat, sk, win in rows:
-        grouped.setdefault(norm_cat(cat), []).append((sk or "", name, int(ts), int(win)))
-    for cat in CATEGORY_ORDER:
-        items = grouped.get(cat, [])
-        if not items: continue
-        normal: List[tuple] = []; nada_list: List[tuple] = []
-        for sk, nm, ts, win in items:
-            delta = ts - now
-            t = fmt_delta_for_list(delta)
-            if t == "-Nada":
-                nada_list.append((sk, nm, t, ts, win))
-            else:
-                normal.append((sk, nm, t, ts, win))
-        normal.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
-        nada_list.sort(key=lambda x: natural_key(x[1]))
-        blocks: List[str] = []
-        for sk, nm, t, ts, win_m in normal:
-            win_status = window_label(now, ts, win_m)
-            line1 = f"〔 **{nm}** • Spawn: `{t}` • Window: `{win_status}` 〕"
-            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
-            blocks.append(line1 + (eta_line if eta_line else ""))
-        if nada_list:
-            blocks.append("*Lost (-Nada):*")
-            for sk, nm, t, ts, win_m in nada_list:
-                blocks.append(f"• **{nm}** — `{t}`")
-        description = "\n\n".join(blocks) if blocks else "No timers."
-        em = discord.Embed(
-            title=f"{category_emoji(cat)} {cat}",
-            description=description,
-            color=await get_category_color(gid, cat)
-        )
-        await ctx.send(embed=em)
-
-# -------- /timers (per-user UI) --------
-class TimerToggleView(discord.ui.View):
-    def __init__(self, guild: discord.Guild, user_id: int, init_show: List[str]):
-        super().__init__(timeout=300)
-        self.guild = guild
-        self.user_id = user_id
-        self.shown = [c for c in CATEGORY_ORDER if c in init_show] or CATEGORY_ORDER[:]  # default to all
-        for idx, cat in enumerate(CATEGORY_ORDER):
-            self.add_item(self._make_toggle_button(cat, idx))
-        self.add_item(self._make_all_button())
-        self.add_item(self._make_none_button())
-        self.message = None
-
-    def _make_toggle_button(self, cat: str, idx: int):
-        return ToggleButton(label=cat, style=discord.ButtonStyle.primary, cat=cat, row=min(4, idx // 3))
-
-    def _make_all_button(self):
-        return ControlButton(label="Show All", style=discord.ButtonStyle.success, action="all", row=4)
-
-    def _make_none_button(self):
-        return ControlButton(label="Hide All", style=discord.ButtonStyle.danger, action="none", row=4)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This panel isn't yours — run `/timers` to get your own.", ephemeral=True)
-            return False
-        return True
-
-    async def persist(self):
-        await set_user_shown_categories(self.guild.id, self.user_id, self.shown)
-
-    async def refresh(self, interaction: discord.Interaction):
-        embeds = await build_timer_embeds_for_categories(self.guild, self.shown)
-        content = f"**Categories shown:** {', '.join(self.shown) if self.shown else '(none)'}"
-        await self.persist()
-        if interaction.response.is_done():
-            await interaction.edit_original_response(content=content, embeds=embeds, view=self)
-        else:
-            await interaction.response.edit_message(content=content, embeds=embeds, view=self)
-
-class ToggleButton(discord.ui.Button):
-    def __init__(self, label: str, style: discord.ButtonStyle, cat: str, row: int):
-        super().__init__(label=label, style=style, row=row)
-        self.cat = cat
-
-    async def callback(self, interaction: discord.Interaction):
-        view: TimerToggleView = self.view  # type: ignore
-        if self.cat in view.shown:
-            view.shown.remove(self.cat)
-        else:
-            ordered = [c for c in CATEGORY_ORDER if c in (view.shown + [self.cat])]
-            view.shown = ordered
-        await view.refresh(interaction)
-
-class ControlButton(discord.ui.Button):
-    def __init__(self, label: str, style: discord.ButtonStyle, action: str, row: int):
-        super().__init__(label=label, style=style, row=row)
-        self.action = action
-
-    async def callback(self, interaction: discord.Interaction):
-        view: TimerToggleView = self.view  # type: ignore
-        if self.action == "all":
-            view.shown = [c for c in CATEGORY_ORDER]
-        else:
-            view.shown = []
-        await view.refresh(interaction)
-
-async def build_timer_embeds_for_categories(guild: discord.Guild, categories: List[str]) -> List[discord.Embed]:
-    gid = guild.id
-    show_eta = await get_show_eta(gid)
-    if not categories:
-        return []
-    async with aiosqlite.connect(DB_PATH) as db:
-        q_marks = ",".join("?" for _ in categories)
-        c = await db.execute(f"SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=? AND category IN ({q_marks})",
-                             (gid, *[norm_cat(c) for c in categories]))
-        rows = await c.fetchall()
-    now = now_ts()
-    grouped: Dict[str, List[tuple]] = {k: [] for k in categories}
-    for name, ts, cat, sk, win in rows:
-        nc = norm_cat(cat)
-        if nc in grouped:
-            grouped[nc].append((sk or "", name, int(ts), int(win)))
-    embeds: List[discord.Embed] = []
-    for cat in categories:
-        items = grouped.get(cat, [])
-        items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
-        normal: List[tuple] = []; nada_list: List[tuple] = []
-        for sk, nm, tts, win in items:
-            delta = tts - now; t = fmt_delta_for_list(delta)
-            (nada_list if t == "-Nada" else normal).append((sk, nm, t, tts, win))
-        blocks: List[str] = []
-        for sk, nm, t, ts, win_m in normal:
-            win_status = window_label(now, ts, win_m)
-            line1 = f"〔 **{nm}** • Spawn: `{t}` • Window: `{win_status}` 〕"
-            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
-            blocks.append(line1 + (eta_line if eta_line else ""))
-        if nada_list:
-            blocks.append("*Lost (-Nada):*")
-            for sk, nm, t, ts, win_m in nada_list:
-                blocks.append(f"• **{nm}** — `{t}`")
-        description = "\n\n".join(blocks) if blocks else "No timers."
-        em = discord.Embed(
-            title=f"{category_emoji(cat)} {cat}",
-            description=description,
-            color=await get_category_color(gid, cat)
-        )
-        embeds.append(em)
-    return embeds[:10]
-
 @app_commands.guild_only()
 @bot.tree.command(name="timers", description="Show timers with per-category toggles (ephemeral, remembers your selection)")
 async def slash_timers(interaction: discord.Interaction):
@@ -2126,7 +1865,6 @@ async def setpreannounce_cmd(ctx, *, args: str):
         return await ctx.send(f":white_check_mark: Pre-announce for **{catn}** set to **{m}m**." if m else f":white_check_mark: Pre-announce **disabled** for **{catn}**.")
 
     # per-boss mode
-    # Expect: "Boss Name" <m>  or  Boss Name <m>
     name = None; minutes_tok = None
     if text.startswith('"') and text.count('"') >= 2:
         name = text.split('"',1)[1].split('"',1)[0].strip()
@@ -2247,6 +1985,273 @@ async def ps_run(interaction: discord.Interaction, command: str):
     except Exception as e:
         await interaction.followup.send(f":warning: {e}", ephemeral=True)
 
+# -------- HELP (tidy, no auth-config details) --------
+@bot.command(name="help")
+async def help_cmd(ctx):
+    p = await get_guild_prefix(bot, ctx.message)
+    lines = [
+        f"**Boss Tracker — Commands**",
+        "",
+        f"**Essentials**",
+        f"• Timers: `{p}timers`  • Intervals: `{p}intervals`",
+        f"• Quick reset: `{p}<BossOrAlias>`  (e.g., `{p}snorri`)",
+        "",
+        f"**Boss Ops**",
+        f"• Add: `{p}boss add \"Name\" <spawn_m> <window_m> [#chan] [pre_m] [category]`",
+        f"• Killed: `{p}boss killed \"Name\"` • Increase/Reduce: `{p}boss increase|reduce \"Name\" <m>`",
+        f"• Idle/Nada: `{p}boss nada \"Name\"` • All Idle: `{p}boss nadaall`",
+        f"• Edit: `{p}boss edit \"Name\" <spawn_minutes|window_minutes|pre_announce_min|name|category|sort_key> <value>`",
+        f"• Channel routing: `{p}boss setchannel \"Name\" #chan` • All: `{p}boss setchannelall #chan` • By category: `{p}boss setchannelcat \"Category\" #chan`",
+        f"• Role for reset: `{p}boss setrole @Role` • Clear: `{p}boss setrole none` • Per-boss: `{p}boss setrole \"Name\" @Role`",
+        f"• Aliases: `{p}boss alias add|remove \"Name\" \"alias\"` • List: `{p}boss aliases \"Name\"`",
+        "",
+        f"**Subscriptions**",
+        f"• Panels channel: `{p}setsubchannel #panels` • Refresh: `{p}showsubscriptions`",
+        f"• Ping channel: `{p}setsubpingchannel #pings`",
+        "",
+        f"**Server Settings**",
+        f"• Announce: `{p}setannounce #chan` • Category route: `{p}setannounce category \"Category\" #chan`",
+        f"• ETA: `{p}seteta on|off` • Colors: `{p}setcatcolor <Category> <#hex>`",
+        f"• Heartbeat: `{p}setuptime <minutes>` • HB channel: `{p}setheartbeatchannel #chan`",
+        f"• Prefix: `{p}setprefix <new>`",
+        f"• **Pre-announce**: per-boss `{p}setpreannounce \"Name\" <m|off>` • per-category `{p}setpreannounce category \"Category\" <m|off>` • all `{p}setpreannounce all <m|off>`",
+        "",
+        f"**Status**",
+        f"• `{p}status` • `{p}health`",
+        "",
+        f"**Slash**",
+        f"• `/timers` (ephemeral with per-user category toggles)",
+        f"• `/roles_panel channel:<#> title:<...> pairs:\"😀 @Role, 🔔 @Role\"`",
+    ]
+    text = "\n".join(lines)
+    if len(text) > 1990: text = text[:1985] + "…"
+    if can_send(ctx.channel): await ctx.send(text)
+
+# -------- STATUS / HEALTH --------
+@bot.command(name="status")
+async def status_cmd(ctx):
+    gid = ctx.guild.id; p = await get_guild_prefix(bot, ctx.message)
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "SELECT COALESCE(prefix, ?), default_channel, sub_channel_id, sub_ping_channel_id, "
+            "COALESCE(uptime_minutes, ?), heartbeat_channel_id, COALESCE(show_eta,0) "
+            "FROM guild_config WHERE guild_id=?",
+            (DEFAULT_PREFIX, DEFAULT_UPTIME_MINUTES, gid)
+        )
+        r = await c.fetchone()
+        prefix, ann_id, sub_id, sub_ping_id, hb_min, hb_ch, show_eta = (r if r else (DEFAULT_PREFIX, None, None, None, DEFAULT_UPTIME_MINUTES, None, 0))
+        c = await db.execute("SELECT COUNT(*) FROM bosses WHERE guild_id=?", (gid,))
+        boss_count = (await c.fetchone())[0]
+        now_n = now_ts()
+        c = await db.execute("SELECT next_spawn_ts FROM bosses WHERE guild_id=?", (gid,))
+        times = [int(x[0]) for x in await c.fetchall()]
+        due = sum(1 for t in times if t <= now_n)
+        nada = sum(1 for t in times if (now_n - t) > NADA_GRACE_SECONDS)
+        c = await db.execute("SELECT category,channel_id FROM category_channels WHERE guild_id=?", (gid,))
+        cat_map = {row[0]: row[1] for row in await c.fetchall()}
+        c = await db.execute("SELECT category FROM category_colors WHERE guild_id=?", (gid,))
+        overridden = sorted({norm_cat(row[0]) for row in await c.fetchall()})
+    last_start = await meta_get("last_startup_ts")
+    hb_label = "off" if int(hb_min) <= 0 else f"every {int(hb_min)}m"
+    def ch(idv): return f"<#{idv}>" if idv else "—"
+    lines = [
+        f"**Status**",
+        f"Prefix: `{prefix}` (change: `{p}setprefix <new>`) ",
+        f"Announce channel (global): {ch(ann_id)}",
+        f"Category overrides: " + (", ".join(f"{k}→{ch(v)}" for k,v in cat_map.items()) if cat_map else "none"),
+        f"Subscription panels: {ch(sub_id)} • Subscription pings: {ch(sub_ping_id)}",
+        f"Heartbeat: {hb_label} • Channel: {ch(hb_ch)}",
+        f"UTC ETA: {'on' if show_eta else 'off'}",
+        f"Bosses: {boss_count} • Due now: {due} • -Nada: {nada}",
+        f"Color overrides: {', '.join(overridden) if overridden else 'none'}",
+        f"Last startup: {ts_to_utc(int(last_start)) if last_start and last_start.isdigit() else '—'}",
+    ]
+    await ctx.send("\n".join(lines))
+
+@bot.command(name="health")
+@commands.has_permissions(administrator=True)
+async def health_cmd(ctx):
+    required = {"bosses","guild_config","meta","category_colors","subscription_emojis","subscription_members",
+                "boss_aliases","category_channels","user_timer_prefs","subscription_panels","rr_panels","rr_map","blacklist"}
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        present = {row[0] for row in await c.fetchall()}
+        c = await db.execute("SELECT COUNT(*) FROM guild_config WHERE guild_id=?", (ctx.guild.id,))
+        cfg_rows = (await c.fetchone())[0]
+    missing = sorted(list(required - present))
+    tick_age = now_ts() - _last_timer_tick_ts if _last_timer_tick_ts else None
+    lines = [
+        "**Health**",
+        f"DB: `{DB_PATH}`",
+        f"Tables OK: {'yes' if not missing else 'no'}{'' if not missing else ' (missing: ' + ', '.join(missing) + ')'}",
+        f"Timers loop: {'running' if timers_tick.is_running() else 'stopped'}",
+        f"Heartbeat loop: {'running' if uptime_heartbeat.is_running() else 'stopped'}",
+        f"Last timer tick: {ts_to_utc(_last_timer_tick_ts) if _last_timer_tick_ts else '—'}"
+        + (f" ({human_ago(tick_age)})" if tick_age is not None else ""),
+        f"guild_config row present: {'yes' if cfg_rows > 0 else 'no'}",
+    ]
+    await ctx.send("\n".join(lines))
+
+# -------- SHOW ETA FLAG --------
+async def get_show_eta(guild_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT COALESCE(show_eta,0) FROM guild_config WHERE guild_id=?", (guild_id,))
+        r = await c.fetchone()
+        return bool(r and int(r[0]) == 1)
+
+# -------- TIMERS (text) --------
+@bot.command(name="timers")
+async def timers_cmd(ctx):
+    gid = ctx.guild.id; show_eta = await get_show_eta(gid)
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=?", (gid,))
+        rows = await c.fetchall()
+    if not rows: return await ctx.send("No timers. Add with `boss add \"Name\" <spawn_m> <window_m> [#chan] [pre_m] [cat]`.")
+    now = now_ts()
+    grouped: Dict[str, List[tuple]] = {k: [] for k in CATEGORY_ORDER}
+    for name, ts, cat, sk, win in rows:
+        grouped.setdefault(norm_cat(cat), []).append((sk or "", name, int(ts), int(win)))
+    for cat in CATEGORY_ORDER:
+        items = grouped.get(cat, [])
+        if not items: continue
+        normal: List[tuple] = []; nada_list: List[tuple] = []
+        for sk, nm, ts, win in items:
+            delta = ts - now
+            t = fmt_delta_for_list(delta)
+            if t == "-Nada":
+                nada_list.append((sk, nm, t, ts, win))
+            else:
+                normal.append((sk, nm, t, ts, win))
+        normal.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
+        nada_list.sort(key=lambda x: natural_key(x[1]))
+        blocks: List[str] = []
+        for sk, nm, t, ts, win_m in normal:
+            win_status = window_label(now, ts, win_m)
+            line1 = f"〔 **{nm}** • Spawn: `{t}` • Window: `{win_status}` 〕"
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
+            blocks.append(line1 + (eta_line if eta_line else ""))
+        if nada_list:
+            blocks.append("*Lost (-Nada):*")
+            for sk, nm, t, ts, win_m in nada_list:
+                blocks.append(f"• **{nm}** — `{t}`")
+        description = "\n\n".join(blocks) if blocks else "No timers."
+        em = discord.Embed(
+            title=f"{category_emoji(cat)} {cat}",
+            description=description,
+            color=await get_category_color(gid, cat)
+        )
+        await ctx.send(embed=em)
+
+# -------- /timers (per-user UI) --------
+class TimerToggleView(discord.ui.View):
+    def __init__(self, guild: discord.Guild, user_id: int, init_show: List[str]):
+        super().__init__(timeout=300)
+        self.guild = guild
+        self.user_id = user_id
+        self.shown = [c for c in CATEGORY_ORDER if c in init_show] or CATEGORY_ORDER[:]  # default to all
+        for idx, cat in enumerate(CATEGORY_ORDER):
+            self.add_item(self._make_toggle_button(cat, idx))
+        self.add_item(self._make_all_button())
+        self.add_item(self._make_none_button())
+        self.message = None
+
+    def _make_toggle_button(self, cat: str, idx: int):
+        return ToggleButton(label=cat, style=discord.ButtonStyle.primary, cat=cat, row=min(4, idx // 3))
+
+    def _make_all_button(self):
+        return ControlButton(label="Show All", style=discord.ButtonStyle.success, action="all", row=4)
+
+    def _make_none_button(self):
+        return ControlButton(label="Hide All", style=discord.ButtonStyle.danger, action="none", row=4)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This panel isn't yours — run `/timers` to get your own.", ephemeral=True)
+            return False
+        return True
+
+    async def persist(self):
+        await set_user_shown_categories(self.guild.id, self.user_id, self.shown)
+
+    async def refresh(self, interaction: discord.Interaction):
+        embeds = await build_timer_embeds_for_categories(self.guild, self.shown)
+        content = f"**Categories shown:** {', '.join(self.shown) if self.shown else '(none)'}"
+        await self.persist()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=content, embeds=embeds, view=self)
+        else:
+            await interaction.response.edit_message(content=content, embeds=embeds, view=self)
+
+class ToggleButton(discord.ui.Button):
+    def __init__(self, label: str, style: discord.ButtonStyle, cat: str, row: int):
+        super().__init__(label=label, style=style, row=row)
+        self.cat = cat
+
+    async def callback(self, interaction: discord.Interaction):
+        view: TimerToggleView = self.view  # type: ignore
+        if self.cat in view.shown:
+            view.shown.remove(self.cat)
+        else:
+            ordered = [c for c in CATEGORY_ORDER if c in (view.shown + [self.cat])]
+            view.shown = ordered
+        await view.refresh(interaction)
+
+class ControlButton(discord.ui.Button):
+    def __init__(self, label: str, style: discord.ButtonStyle, action: str, row: int):
+        super().__init__(label=label, style=style, row=row)
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        view: TimerToggleView = self.view  # type: ignore
+        if self.action == "all":
+            view.shown = [c for c in CATEGORY_ORDER]
+        else:
+            view.shown = []
+        await view.refresh(interaction)
+
+async def build_timer_embeds_for_categories(guild: discord.Guild, categories: List[str]) -> List[discord.Embed]:
+    gid = guild.id
+    show_eta = await get_show_eta(gid)
+    if not categories:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        q_marks = ",".join("?" for _ in categories)
+        c = await db.execute(f"SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=? AND category IN ({q_marks})",
+                             (gid, *[norm_cat(c) for c in categories]))
+        rows = await c.fetchall()
+    now = now_ts()
+    grouped: Dict[str, List[tuple]] = {k: [] for k in categories}
+    for name, ts, cat, sk, win in rows:
+        nc = norm_cat(cat)
+        if nc in grouped:
+            grouped[nc].append((sk or "", name, int(ts), int(win)))
+    embeds: List[discord.Embed] = []
+    for cat in categories:
+        items = grouped.get(cat, [])
+        items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
+        normal: List[tuple] = []; nada_list: List[tuple] = []
+        for sk, nm, tts, win in items:
+            delta = tts - now; t = fmt_delta_for_list(delta)
+            (nada_list if t == "-Nada" else normal).append((sk, nm, t, tts, win))
+        blocks: List[str] = []
+        for sk, nm, t, ts, win_m in normal:
+            win_status = window_label(now, ts, win_m)
+            line1 = f"〔 **{nm}** • Spawn: `{t}` • Window: `{win_status}` 〕"
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
+            blocks.append(line1 + (eta_line if eta_line else ""))
+        if nada_list:
+            blocks.append("*Lost (-Nada):*")
+            for sk, nm, t, ts, win_m in nada_list:
+                blocks.append(f"• **{nm}** — `{t}`")
+        description = "\n\n".join(blocks) if blocks else "No timers."
+        em = discord.Embed(
+            title=f"{category_emoji(cat)} {cat}",
+            description=description,
+            color=await get_category_color(gid, cat)
+        )
+        embeds.append(em)
+    return embeds[:10]
+
 # -------- ERRORS --------
 @bot.event
 async def on_command_error(ctx, error):
@@ -2274,16 +2279,6 @@ def _persist_offline_since_on_exit():
     except Exception:
         pass
 
-# -------- RUN --------
-async def main():
-    loop = asyncio.get_running_loop()
-    for s in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
-        if s:
-            try: loop.add_signal_handler(s, lambda sig=s: asyncio.create_task(graceful_shutdown(sig)))
-            except NotImplementedError: pass
-    try: await bot.start(TOKEN)
-    except KeyboardInterrupt: await graceful_shutdown()
-
 # --- Interaction reply helper to avoid "Application did not respond" ---
 async def ireply(
     inter: discord.Interaction,
@@ -2301,7 +2296,6 @@ async def ireply(
             await inter.response.send_message(content=content, embed=embed, embeds=embeds, ephemeral=ephemeral)
     except Exception as e:
         log.warning(f"ireply error: {e}")
-
 
 # -------------------- Lixing & Market (Slash Add-on) --------------------
 # Design:
@@ -2677,7 +2671,6 @@ def lm_bind_commands(section: str, group: app_commands.Group):
             left = LM_TTL_SECONDS - (now - int(last_ping))
             return await inter.response.send_message(f"You can bump again in **{fmt_delta_for_list(left)}**.", ephemeral=True)
         # Repost
-        # Don't duplicate validation; reuse post flow but ensure this counts as a bump
         ch_id = await lm_get_section_channel(gid, sec)
         if not ch_id:
             return await inter.response.send_message(f"Set a channel first with `/{sec} set_channel`.", ephemeral=True)
@@ -2756,7 +2749,6 @@ async def _lm_on_ready():
         log.warning(f"Lix/Market init failed: {e}")
 # ------------------ End Lixing & Market Add-on ------------------
 
-
+# ------------------ RUN ------------------
 if __name__ == "__main__":
     asyncio.run(main())
-
