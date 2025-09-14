@@ -2284,5 +2284,460 @@ async def main():
     try: await bot.start(TOKEN)
     except KeyboardInterrupt: await graceful_shutdown()
 
+# -------------------- Lixing & Market (Slash Add-on) --------------------
+# Design:
+# - No subscriber pings. Posts always go to a configured channel per section (lix/market)
+#   with an optional per-section role ping.
+# - 6h cooldown per (author + topic + text hash) for create/bump.
+# - Topics are fully editable via slash commands.
+# - Cleaner task deletes expired posts and their messages.
+#
+# Storage (independent from your existing tables):
+# - section_channels(guild_id, section, post_channel_id, ping_role_id, panel_channel_id NULL)
+# - topic_keys(guild_id, section, key, emoji, sort_order)
+# - listings(id, guild_id, section, topic_key, author_id, text, text_hash, created_ts, last_ping_ts, expires_ts, channel_id, message_id)
+#
+# Sections: 'lix' (lixing/LFG) and 'market' (trade)
+#
+# Slash groups provided:
+#   /lix set_channel, set_role, topics add|remove|list, post, browse, bump, close
+#   /market set_channel, set_role, topics add|remove|list, post, browse, bump, close
+
+LM_SEC_LIX = "lix"
+LM_SEC_MARKET = "market"
+LM_VALID_SECTIONS = {LM_SEC_LIX, LM_SEC_MARKET}
+LM_TTL_SECONDS = 6 * 60 * 60       # 6 hours
+LM_POST_RATE_SECONDS = 30          # Anti-spam for creating new listings
+LM_BROWSE_LIMIT = 20               # Max entries shown in browse
+LM_CLEAN_INTERVAL = 300            # 5 minutes
+
+# --- DB bootstrap for add-on ---
+async def lm_init_tables():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS section_channels (
+            guild_id INTEGER NOT NULL,
+            section  TEXT NOT NULL,
+            post_channel_id INTEGER,
+            ping_role_id INTEGER,
+            panel_channel_id INTEGER,
+            PRIMARY KEY (guild_id, section)
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS topic_keys (
+            guild_id INTEGER NOT NULL,
+            section  TEXT NOT NULL,
+            key      TEXT NOT NULL,
+            emoji    TEXT DEFAULT '🔔',
+            sort_order INTEGER DEFAULT 0,
+            PRIMARY KEY (guild_id, section, key)
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS listings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            section  TEXT NOT NULL,
+            topic_key TEXT NOT NULL,
+            author_id INTEGER NOT NULL,
+            text      TEXT NOT NULL,
+            text_hash TEXT NOT NULL,
+            created_ts INTEGER NOT NULL,
+            last_ping_ts INTEGER NOT NULL,
+            expires_ts INTEGER NOT NULL,
+            channel_id INTEGER,
+            message_id INTEGER
+        )""")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_listings_exp ON listings(expires_ts)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_listings_gs ON listings(guild_id, section)")
+        await db.commit()
+
+# --- Utilities specific to Lix/Market ---
+def lm_norm_section(s: str) -> str:
+    s = (s or "").strip().lower()
+    return LM_SEC_LIX if s.startswith("lix") else (LM_SEC_MARKET if s.startswith("mark") else s)
+
+async def lm_get_section_channel(guild_id: int, section: str) -> Optional[int]:
+    section = lm_norm_section(section)
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT post_channel_id FROM section_channels WHERE guild_id=? AND section=?", (guild_id, section))
+        r = await c.fetchone()
+    return int(r[0]) if r and r[0] else None
+
+async def lm_set_section_channel(guild_id: int, section: str, channel_id: int):
+    section = lm_norm_section(section)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO section_channels (guild_id,section,post_channel_id) VALUES (?,?,?) "
+            "ON CONFLICT(guild_id,section) DO UPDATE SET post_channel_id=excluded.post_channel_id",
+            (guild_id, section, channel_id)
+        ); await db.commit()
+
+async def lm_get_section_role(guild_id: int, section: str) -> Optional[int]:
+    section = lm_norm_section(section)
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT ping_role_id FROM section_channels WHERE guild_id=? AND section=?", (guild_id, section))
+        r = await c.fetchone()
+    return int(r[0]) if r and r[0] else None
+
+async def lm_set_section_role(guild_id: int, section: str, role_id: Optional[int]):
+    section = lm_norm_section(section)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO section_channels (guild_id,section,ping_role_id) VALUES (?,?,?) "
+            "ON CONFLICT(guild_id,section) DO UPDATE SET ping_role_id=excluded.ping_role_id",
+            (guild_id, section, (int(role_id) if role_id else None))
+        ); await db.commit()
+
+async def lm_seed_topics_if_empty(guild: discord.Guild):
+    """Idempotent: creates sensible defaults only if no topics exist yet."""
+    defaults = {
+        LM_SEC_LIX: [
+            ("25–60", "🧭", 10), ("60–100", "🧭", 20), ("100–150", "🧭", 30),
+            ("150–185", "🧭", 40), ("185+", "🧭", 50), ("Bounties/Dailies", "📜", 60),
+            ("Proteus/Base", "🧪", 70), ("Gelebron", "🏰", 80), ("BT/Seeds", "🌱", 90),
+        ],
+        LM_SEC_MARKET: [
+            ("WTS", "💰", 10), ("WTB", "🛒", 20), ("Price Check", "📈", 30),
+            ("Services", "🧰", 40), ("Keys/Shards", "🗝️", 50), ("Event Items", "🎉", 60),
+        ],
+    }
+    async with aiosqlite.connect(DB_PATH) as db:
+        for sec, rows in defaults.items():
+            c = await db.execute("SELECT 1 FROM topic_keys WHERE guild_id=? AND section=? LIMIT 1", (guild.id, sec))
+            exists = await c.fetchone()
+            if exists:  # already has topics
+                continue
+            for key, emoji, order in rows:
+                await db.execute("INSERT OR IGNORE INTO topic_keys (guild_id,section,key,emoji,sort_order) VALUES (?,?,?,?,?)",
+                                 (guild.id, sec, key, emoji, order))
+        await db.commit()
+
+def lm_text_hash(guild_id: int, author_id: int, section: str, topic_key: str, text: str) -> str:
+    base = f"{guild_id}|{author_id}|{section}|{topic_key}|{(text or '').strip().lower()}"
+    import hashlib
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
+async def lm_get_topics(guild_id: int, section: str) -> List[Tuple[str, str, int]]:
+    """Return [(key, emoji, sort_order)]"""
+    section = lm_norm_section(section)
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT key,emoji,sort_order FROM topic_keys WHERE guild_id=? AND section=? ORDER BY sort_order, key",
+                             (guild_id, section))
+        return [(r[0], r[1], int(r[2])) for r in await c.fetchall()]
+
+async def lm_require_manage(inter: discord.Interaction) -> bool:
+    if not inter.user.guild_permissions.manage_messages and not inter.user.guild_permissions.administrator:
+        await inter.response.send_message("You need **Manage Messages** permission for that.", ephemeral=True)
+        return False
+    return True
+
+async def lm_post_listing(
+    inter: discord.Interaction, section: str, topic_key: str, text: str
+) -> Optional[int]:
+    """Creates a listing, enforces cooldown, posts to channel, returns listing ID or None if blocked."""
+    section = lm_norm_section(section)
+    now = now_ts()
+    gid = inter.guild.id
+    author_id = inter.user.id
+    text = (text or "").strip()
+    if len(text) < 3:
+        await inter.response.send_message("Please provide a bit more detail (3+ characters).", ephemeral=True)
+        return None
+    # anti-spam: soft throttle for *new* posts
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("""SELECT MAX(created_ts) FROM listings WHERE guild_id=? AND section=? AND author_id=?""",
+                             (gid, section, author_id))
+        last_created = (await c.fetchone())[0]
+    if last_created and now - int(last_created) < LM_POST_RATE_SECONDS:
+        await inter.response.send_message("You're posting a bit fast — give it a few seconds and try again.", ephemeral=True)
+        return None
+
+    # enforce 6h cooldown on same (author+topic+text)
+    hsh = lm_text_hash(gid, author_id, section, topic_key, text)
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("""SELECT id,last_ping_ts FROM listings
+                                WHERE guild_id=? AND section=? AND author_id=? AND topic_key=? AND text_hash=?
+                                ORDER BY id DESC LIMIT 1""",
+                             (gid, section, author_id, topic_key, hsh))
+        row = await c.fetchone()
+    if row and (now - int(row[1]) < LM_TTL_SECONDS):
+        left = LM_TTL_SECONDS - (now - int(row[1]))
+        await inter.response.send_message(f"You can bump this again in **{fmt_delta_for_list(left)}**.", ephemeral=True)
+        return None
+
+    # resolve channel
+    ch_id = await lm_get_section_channel(gid, section)
+    if not ch_id:
+        await inter.response.send_message(f"Set a channel first with `/{section} set_channel`.", ephemeral=True)
+        return None
+    ch = inter.guild.get_channel(ch_id)
+    if not can_send(ch):
+        await inter.response.send_message("I can't post in the configured channel (missing perms?).", ephemeral=True)
+        return None
+
+    # optional role mention
+    role_id = await lm_get_section_role(gid, section)
+    mention = f"<@&{role_id}> " if role_id else ""
+
+    # topic emoji (if any)
+    topics = await lm_get_topics(gid, section)
+    emoji = next((e for k, e, _ in topics if k.lower() == topic_key.lower()), "🔔")
+
+    # build post
+    title = "LFG" if section == LM_SEC_LIX else "Market"
+    embed = discord.Embed(
+        title=f"{emoji} {title} — {topic_key}",
+        description=text[:3900] + ("…" if len(text) > 3900 else ""),
+        color=0x4aa3ff if section == LM_SEC_LIX else 0xf1c40f
+    )
+    embed.set_footer(text=f"by {inter.user.display_name}")
+    try:
+        msg = await ch.send(content=mention + f"**{title}**", embed=embed, allowed_mentions=discord.AllowedMentions(roles=True))
+    except Exception as e:
+        await inter.response.send_message(f"Couldn't post to {ch.mention}: {e}", ephemeral=True)
+        return None
+
+    # persist listing
+    expires = now + LM_TTL_SECONDS
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""INSERT INTO listings
+                            (guild_id,section,topic_key,author_id,text,text_hash,created_ts,last_ping_ts,expires_ts,channel_id,message_id)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                         (gid, section, topic_key, author_id, text, hsh, now, now, expires, ch.id, msg.id))
+        await db.commit()
+        c = await db.execute("SELECT last_insert_rowid()")
+        new_id = int((await c.fetchone())[0])
+
+    await inter.response.send_message(f"Posted #{new_id} in {ch.mention}.", ephemeral=True)
+    return new_id
+
+async def lm_browse_embed(guild: discord.Guild, section: str, topic_key: Optional[str]) -> List[discord.Embed]:
+    """Return embeds listing active posts, filtered by topic if provided."""
+    section = lm_norm_section(section)
+    now = now_ts()
+    params = [guild.id, section, now]
+    sql = "SELECT id,topic_key,author_id,text,created_ts,expires_ts FROM listings WHERE guild_id=? AND section=? AND expires_ts> ?"
+    if topic_key:
+        sql += " AND LOWER(topic_key)=LOWER(?)"; params.append(topic_key)
+    sql += " ORDER BY created_ts DESC LIMIT ?"; params.append(LM_BROWSE_LIMIT)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(sql, params)
+        rows = await c.fetchall()
+    if not rows:
+        em = discord.Embed(title="No active posts", description="Nothing live right now.", color=0x95a5a6)
+        return [em]
+    lines = []
+    for idv, tkey, author_id, text, created_ts, expires_ts in rows:
+        age = now - int(created_ts)
+        left = int(expires_ts) - now
+        lines.append(f"**#{idv}** — **{tkey}** by <@{author_id}>\n> {text[:120]}{'…' if len(text)>120 else ''}\n"
+                     f"*posted {human_ago(age)} • expires in {fmt_delta_for_list(left)}*")
+    desc = "\n\n".join(lines)
+    em = discord.Embed(
+        title=("LFG" if section == LM_SEC_LIX else "Market") + " — Active",
+        description=desc[:4000],
+        color=0x4aa3ff if section == LM_SEC_LIX else 0xf1c40f
+    )
+    return [em]
+
+# --- Cleanup loop ---
+@tasks.loop(seconds=LM_CLEAN_INTERVAL)
+async def lm_cleanup_loop():
+    now = now_ts()
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("""SELECT id,guild_id,channel_id,message_id FROM listings WHERE expires_ts<=?""", (now,))
+        expired = await c.fetchall()
+        await db.execute("DELETE FROM listings WHERE expires_ts<=?", (now,))
+        await db.commit()
+    for idv, gid, ch_id, msg_id in expired:
+        g = bot.get_guild(int(gid))
+        ch = g.get_channel(int(ch_id)) if g else None
+        if ch:
+            try:
+                msg = await ch.fetch_message(int(msg_id))
+                await msg.delete()
+                await asyncio.sleep(0.2)
+            except Exception:
+                pass
+
+# --- Slash groups & commands ---
+lix_group = app_commands.Group(name="lix", description="Lixing (LFG) listings")
+market_group = app_commands.Group(name="market", description="Market listings")
+
+# Autocomplete for topics
+async def lm_topic_autocomplete(inter: discord.Interaction, current: str, section: str):
+    topics = await lm_get_topics(inter.guild.id, section)
+    current_l = (current or "").lower()
+    opts = []
+    for key, emoji, _ in topics:
+        if not current or current_l in key.lower():
+            label = f"{emoji} {key}" if emoji else key
+            opts.append(app_commands.Choice(name=label[:100], value=key[:100]))
+        if len(opts) >= 25: break
+    return opts
+
+# ------- Common subcommands factory -------
+def lm_bind_commands(section: str, group: app_commands.Group):
+    sec = lm_norm_section(section)
+
+    @group.command(name="set_channel", description=f"Set the {sec} post destination channel")
+    @app_commands.describe(channel="Channel where posts & pings will go")
+    async def set_channel(inter: discord.Interaction, channel: discord.TextChannel):
+        if not await lm_require_manage(inter): return
+        await lm_set_section_channel(inter.guild.id, sec, channel.id)
+        await inter.response.send_message(f"✅ {sec.title()} posts will go to {channel.mention}.", ephemeral=True)
+
+    @group.command(name="set_role", description=f"Set a role to mention for each {sec} post (or clear)")
+    @app_commands.describe(role="Role to mention on each post (optional)")
+    async def set_role(inter: discord.Interaction, role: Optional[discord.Role] = None):
+        if not await lm_require_manage(inter): return
+        await lm_set_section_role(inter.guild.id, sec, role.id if role else None)
+        await inter.response.send_message(("✅ Role cleared." if role is None else f"✅ Will mention {role.mention}."), ephemeral=True)
+
+    topics = app_commands.Group(name="topics", description=f"Manage {sec} topics")
+    group.add_command(topics)
+
+    @topics.command(name="add", description=f"Add a new {sec} topic")
+    @app_commands.describe(name="Topic name (e.g., 'WTB', '185+')", emoji="Display emoji", order="Sort order (int, optional)")
+    async def topics_add(inter: discord.Interaction, name: str, emoji: Optional[str] = "🔔", order: Optional[int] = 0):
+        if not await lm_require_manage(inter): return
+        name = name.strip()
+        if not name:
+            return await inter.response.send_message("Topic name cannot be empty.", ephemeral=True)
+        async with aiosqlite.connect(DB_PATH) as db:
+            try:
+                await db.execute("INSERT INTO topic_keys (guild_id,section,key,emoji,sort_order) VALUES (?,?,?,?,?)",
+                                 (inter.guild.id, sec, name, (emoji or "🔔"), int(order or 0)))
+                await db.commit()
+            except Exception:
+                return await inter.response.send_message("That topic already exists.", ephemeral=True)
+        await inter.response.send_message(f"✅ Added topic **{name}**.", ephemeral=True)
+
+    @topics.command(name="remove", description=f"Remove a {sec} topic")
+    @app_commands.describe(name="Exact topic name to remove")
+    async def topics_remove(inter: discord.Interaction, name: str):
+        if not await lm_require_manage(inter): return
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM topic_keys WHERE guild_id=? AND section=? AND key=?",
+                             (inter.guild.id, sec, name))
+            await db.commit()
+        await inter.response.send_message(f"✅ Removed topic **{name}** (existing posts remain).", ephemeral=True)
+
+    @topics.command(name="list", description=f"List all {sec} topics")
+    async def topics_list(inter: discord.Interaction):
+        rows = await lm_get_topics(inter.guild.id, sec)
+        if not rows:
+            return await inter.response.send_message("No topics configured.", ephemeral=True)
+        text = "\n".join([f"{e} **{k}**  · order {o}" for k, e, o in rows])
+        await inter.response.send_message(text[:1900], ephemeral=True)
+
+    @group.command(name="post", description=f"Create a {sec} post (6h cooldown per content)")
+    @app_commands.describe(topic="Pick a topic", text="What you need / offer")
+    @app_commands.autocomplete(topic=lambda i, c: lm_topic_autocomplete(i, c, sec))
+    async def post_cmd(inter: discord.Interaction, topic: str, text: str):
+        await lm_post_listing(inter, sec, topic, text)
+
+    @group.command(name="browse", description=f"Browse active {sec} posts")
+    @app_commands.describe(topic="Filter by topic (optional)")
+    @app_commands.autocomplete(topic=lambda i, c: lm_topic_autocomplete(i, c, sec))
+    async def browse_cmd(inter: discord.Interaction, topic: Optional[str] = None):
+        embeds = await lm_browse_embed(inter.guild, sec, topic)
+        await inter.response.send_message(embeds=embeds, ephemeral=True)
+
+    @group.command(name="bump", description=f"Bump your {sec} post (6h cooldown)")
+    @app_commands.describe(id="Listing ID to bump")
+    async def bump_cmd(inter: discord.Interaction, id: int):
+        gid = inter.guild.id; now = now_ts()
+        async with aiosqlite.connect(DB_PATH) as db:
+            c = await db.execute("""SELECT id,topic_key,text,last_ping_ts FROM listings
+                                    WHERE id=? AND guild_id=? AND section=? AND author_id=? AND expires_ts>?""",
+                                 (int(id), gid, sec, inter.user.id, now))
+            row = await c.fetchone()
+        if not row:
+            return await inter.response.send_message("Listing not found, expired, or not yours.", ephemeral=True)
+        _id, topic_key, text, last_ping = row
+        if now - int(last_ping) < LM_TTL_SECONDS:
+            left = LM_TTL_SECONDS - (now - int(last_ping))
+            return await inter.response.send_message(f"You can bump again in **{fmt_delta_for_list(left)}**.", ephemeral=True)
+        # Repost
+        # Don't duplicate validation; reuse post flow but ensure this counts as a bump
+        ch_id = await lm_get_section_channel(gid, sec)
+        if not ch_id:
+            return await inter.response.send_message(f"Set a channel first with `/{sec} set_channel`.", ephemeral=True)
+        ch = inter.guild.get_channel(ch_id)
+        if not can_send(ch):
+            return await inter.response.send_message("I can't post in the configured channel.", ephemeral=True)
+        role_id = await lm_get_section_role(gid, sec)
+        mention = f"<@&{role_id}> " if role_id else ""
+        topics = await lm_get_topics(gid, sec)
+        emoji = next((e for k, e, _ in topics if k.lower() == topic_key.lower()), "🔔")
+        title = "LFG" if sec == LM_SEC_LIX else "Market"
+        embed = discord.Embed(title=f"{emoji} {title} — {topic_key}", description=text[:3900] + ("…" if len(text) > 3900 else ""),
+                              color=0x4aa3ff if sec == LM_SEC_LIX else 0xf1c40f)
+        embed.set_footer(text=f"by {inter.user.display_name}")
+        try:
+            msg = await ch.send(content=mention + f"**{title}**", embed=embed, allowed_mentions=discord.AllowedMentions(roles=True))
+        except Exception as e:
+            return await inter.response.send_message(f"Couldn't post to {ch.mention}: {e}", ephemeral=True)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE listings SET last_ping_ts=?, channel_id=?, message_id=? WHERE id=?",
+                             (now, ch.id, msg.id, int(id)))
+            await db.commit()
+        await inter.response.send_message(f"✅ Bumped #{id}.", ephemeral=True)
+
+    @group.command(name="close", description=f"Close (expire) your {sec} post")
+    @app_commands.describe(id="Listing ID to close")
+    async def close_cmd(inter: discord.Interaction, id: int):
+        gid = inter.guild.id
+        async with aiosqlite.connect(DB_PATH) as db:
+            c = await db.execute("""SELECT channel_id,message_id FROM listings
+                                    WHERE id=? AND guild_id=? AND section=? AND author_id=?""",
+                                 (int(id), gid, sec, inter.user.id))
+            row = await c.fetchone()
+            if not row:
+                return await inter.response.send_message("Listing not found or not yours.", ephemeral=True)
+            ch_id, msg_id = row
+            await db.execute("DELETE FROM listings WHERE id=?", (int(id),))
+            await db.commit()
+        g = inter.guild; ch = g.get_channel(int(ch_id)) if ch_id else None
+        if ch:
+            try:
+                msg = await ch.fetch_message(int(msg_id))
+                await msg.delete()
+            except Exception:
+                pass
+        await inter.response.send_message(f"✅ Closed #{id}.", ephemeral=True)
+
+# Bind commands for both sections
+lm_bind_commands(LM_SEC_LIX, lix_group)
+lm_bind_commands(LM_SEC_MARKET, market_group)
+
+# Register groups & seed topics on ready (without touching your existing on_ready)
+@bot.listen("on_ready")
+async def _lm_on_ready():
+    try:
+        await lm_init_tables()
+        # Seed default topics if empty
+        for g in bot.guilds:
+            await lm_seed_topics_if_empty(g)
+        # Add groups if not already present
+        names = {cmd.name for cmd in bot.tree.get_commands()}
+        if "lix" not in names:
+            bot.tree.add_command(lix_group)
+        if "market" not in names:
+            bot.tree.add_command(market_group)
+        # Start cleaner
+        if not lm_cleanup_loop.is_running():
+            lm_cleanup_loop.start()
+        # Optional: sync (safe to ignore errors)
+        try:
+            await bot.tree.sync()
+        except Exception:
+            pass
+        log.info("Lixing & Market add-on ready.")
+    except Exception as e:
+        log.warning(f"Lix/Market init failed: {e}")
+# ------------------ End Lixing & Market Add-on ------------------
+
+
 if __name__ == "__main__":
     asyncio.run(main())
+
