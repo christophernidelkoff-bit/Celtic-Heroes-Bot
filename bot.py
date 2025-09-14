@@ -173,6 +173,8 @@ RESERVED_TRIGGERS = {
     "setsubchannel","setsubpingchannel","showsubscriptions","setuptime",
     "setheartbeatchannel","setannounce","seteta","status","health",
     "setcatcolor","intervals",
+    # New family reserved so quick-kill shorthand doesn't hijack it:
+    "setpreannounce",
 }
 
 # -------------------- DB PREFLIGHT (sync) + ASYNC INIT --------------------
@@ -1139,7 +1141,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
             member = guild.get_member(payload.user_id) or await guild.fetch_member(payload.user_id)
             async with aiosqlite.connect(DB_PATH) as db:
                 c = await db.execute("SELECT role_id FROM rr_map WHERE panel_message_id=? AND emoji=?", (payload.message_id, emoji_str))
-                row = await c.fetchone()
+                row = await db.fetchone()
             if not row:
                 return
             role = guild.get_role(int(row[0]))
@@ -1178,6 +1180,7 @@ async def help_cmd(ctx):
         f"• ETA: `{p}seteta on|off` • Colors: `{p}setcatcolor <Category> <#hex>`",
         f"• Heartbeat: `{p}setuptime <minutes>` • HB channel: `{p}setheartbeatchannel #chan`",
         f"• Prefix: `{p}setprefix <new>`",
+        f"• **Pre-announce**: per-boss `{p}setpreannounce \"Name\" <m|off>` • per-category `{p}setpreannounce category \"Category\" <m|off>` • all `{p}setpreannounce all <m|off>`",
         "",
         f"**Status**",
         f"• `{p}status` • `{p}health`",
@@ -1393,9 +1396,9 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
         items = grouped.get(cat, [])
         items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
         normal: List[tuple] = []; nada_list: List[tuple] = []
-        for sk, nm, ts, win in items:
-            delta = ts - now; t = fmt_delta_for_list(delta)
-            (nada_list if t == "-Nada" else normal).append((sk, nm, t, ts, win))
+        for sk, nm, tts, win in items:
+            delta = tts - now; t = fmt_delta_for_list(delta)
+            (nada_list if t == "-Nada" else normal).append((sk, nm, t, tts, win))
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
@@ -2018,6 +2021,101 @@ async def showsubscriptions_cmd(ctx):
     await refresh_subscription_messages(ctx.guild)
     await ctx.send(":white_check_mark: Subscription panels refreshed (one per category).")
 
+# -------- NEW: SETPREANNOUNCE FAMILY --------
+@bot.command(name="setpreannounce")
+@commands.has_permissions(manage_guild=True)
+async def setpreannounce_cmd(ctx, *, args: str):
+    """
+    Dedicated family to set pre-announce minutes.
+    Usage:
+      • !setpreannounce "Boss Name" <m|off>
+      • !setpreannounce category "<Category>" <m|off>
+      • !setpreannounce all <m|off>
+    Notes:
+      - 'off' / 'none' / '0' disables pre-announces (sets 0).
+      - Minutes are capped between 0 and 10080 (7 days) to avoid accidental huge values.
+    """
+    text = (args or "").strip()
+    if not text:
+        return await ctx.send('Usage: `!setpreannounce "Boss Name" <m|off>` | `!setpreannounce category "<Category>" <m|off>` | `!setpreannounce all <m|off>`')
+
+    def parse_minutes(tok: str) -> Optional[int]:
+        tl = (tok or "").strip().lower()
+        if tl in {"off","none","disable","disabled","0"}: return 0
+        if tl.endswith("m"): tl = tl[:-1]
+        if not tl.lstrip("-").isdigit(): return None
+        val = int(tl)
+        if val < 0: val = 0
+        if val > 10080: val = 10080
+        return val
+
+    # all-mode
+    if text.lower().startswith("all"):
+        rest = text[3:].strip()
+        if not rest:
+            return await ctx.send("Provide minutes, e.g., `!setpreannounce all 10` or `off`.")
+        m = parse_minutes(rest.split()[-1])
+        if m is None:
+            return await ctx.send("Minutes must be a number or `off`.")
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE bosses SET pre_announce_min=? WHERE guild_id=?", (m, ctx.guild.id))
+            await db.commit()
+        return await ctx.send(f":white_check_mark: Pre-announce for **all bosses** set to **{m}m**." if m else ":white_check_mark: Pre-announce **disabled** for all bosses.")
+
+    # category-mode
+    if text.lower().startswith("category"):
+        after = text[len("category"):].strip()
+        cat = None; minutes_tok = None
+        if after.startswith('"') and after.count('"') >= 2:
+            cat = after.split('"',1)[1].split('"',1)[0].strip()
+            tail = after.split('"',2)[-1].strip()
+            if not tail:
+                return await ctx.send('Provide minutes after the category, e.g., `!setpreannounce category "Frozen" 8`.')
+            minutes_tok = tail.split()[-1]
+        else:
+            parts = after.split()
+            if len(parts) < 2:
+                return await ctx.send('Format: `!setpreannounce category "<Category>" <m|off>`')
+            minutes_tok = parts[-1]
+            cat = " ".join(parts[:-1]).strip()
+        m = parse_minutes(minutes_tok or "")
+        if m is None:
+            return await ctx.send("Minutes must be a number or `off`.")
+        catn = norm_cat(cat)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE bosses SET pre_announce_min=? WHERE guild_id=? AND category=?", (m, ctx.guild.id, catn))
+            await db.commit()
+        return await ctx.send(f":white_check_mark: Pre-announce for **{catn}** set to **{m}m**." if m else f":white_check_mark: Pre-announce **disabled** for **{catn}**.")
+
+    # per-boss mode
+    # Expect: "Boss Name" <m>  or  Boss Name <m>
+    name = None; minutes_tok = None
+    if text.startswith('"') and text.count('"') >= 2:
+        name = text.split('"',1)[1].split('"',1)[0].strip()
+        tail = text.split('"',2)[-1].strip()
+        if not tail:
+            return await ctx.send('Provide minutes after the name, e.g., `!setpreannounce "Grom" 12`.')
+        minutes_tok = tail.split()[-1]
+    else:
+        parts = text.split()
+        if len(parts) < 2:
+            return await ctx.send('Format: `!setpreannounce "Boss Name" <m|off>`')
+        minutes_tok = parts[-1]
+        name = " ".join(parts[:-1]).strip()
+
+    m = parse_minutes(minutes_tok or "")
+    if m is None:
+        return await ctx.send("Minutes must be a number or `off`.")
+
+    res, err = await resolve_boss(ctx, name)
+    if err:
+        return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET pre_announce_min=? WHERE id=? AND guild_id=?", (m, bid, ctx.guild.id))
+        await db.commit()
+    await ctx.send(f":white_check_mark: Pre-announce for **{nm}** set to **{m}m**." if m else f":white_check_mark: Pre-announce **disabled** for **{nm}**.")
+
 # -------- REACTION ROLES (slash) --------
 @app_commands.guild_only()
 @app_commands.default_permissions(manage_roles=True)
@@ -2150,4 +2248,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
