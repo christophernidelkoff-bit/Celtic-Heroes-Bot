@@ -2284,6 +2284,25 @@ async def main():
     try: await bot.start(TOKEN)
     except KeyboardInterrupt: await graceful_shutdown()
 
+# --- Interaction reply helper to avoid "Application did not respond" ---
+async def ireply(
+    inter: discord.Interaction,
+    content: Optional[str] = None,
+    *,
+    embed: Optional[discord.Embed] = None,
+    embeds: Optional[List[discord.Embed]] = None,
+    ephemeral: bool = True
+):
+    """Reply safely whether we've already deferred or not."""
+    try:
+        if inter.response.is_done():
+            await inter.followup.send(content=content, embed=embed, embeds=embeds, ephemeral=ephemeral)
+        else:
+            await inter.response.send_message(content=content, embed=embed, embeds=embeds, ephemeral=ephemeral)
+    except Exception as e:
+        log.warning(f"ireply error: {e}")
+
+
 # -------------------- Lixing & Market (Slash Add-on) --------------------
 # Design:
 # - No subscriber pings. Posts always go to a configured channel per section (lix/market)
