@@ -729,8 +729,10 @@ async def boot_offline_processing():
                     log.warning(f"Offline notice failed: {e}")
             await send_subscription_ping(gid, bid, phase="window", boss_name=name)
 
-# -------------------- SEED DATA (includes DL '180' = 88/3) --------------------
-SEED_DATA = [
+# -------------------- SEED DATA (exact to your list) --------------------
+# NOTE: This table defines the authoritative respawn/window minutes for all listed bosses.
+# Existing entries in DB will be UPDATED to these values by ensure_seed_for_guild().
+SEED_DATA: List[Tuple[str, str, int, int, List[str]]] = [
     # METEORIC
     ("Meteoric", "Doomclaw", 7, 5, []),
     ("Meteoric", "Bonehad", 15, 5, []),
@@ -738,7 +740,7 @@ SEED_DATA = [
     ("Meteoric", "Redbane", 20, 5, []),
     ("Meteoric", "Coppinger", 20, 5, ["copp"]),
     ("Meteoric", "Goretusk", 20, 5, []),
-    ("Meteoric", "Falgren", 45, 5, []),
+
     # FROZEN
     ("Frozen", "Redbane", 20, 5, []),
     ("Frozen", "Eye", 28, 3, []),
@@ -747,12 +749,14 @@ SEED_DATA = [
     ("Frozen", "Chained", 43, 3, ["chain"]),
     ("Frozen", "Grom", 48, 3, []),
     ("Frozen", "Pyrus", 58, 3, ["py"]),
-    # DL (fixed 180 => 88/3)
+
+    # DL
     ("DL", "155", 63, 3, []),
     ("DL", "160", 68, 3, []),
     ("DL", "165", 73, 3, []),
     ("DL", "170", 78, 3, []),
     ("DL", "180", 88, 3, ["snorri"]),
+
     # EDL
     ("EDL", "185", 72, 3, []),
     ("EDL", "190", 81, 3, []),
@@ -761,74 +765,108 @@ SEED_DATA = [
     ("EDL", "205", 117, 4, []),
     ("EDL", "210", 125, 5, []),
     ("EDL", "215", 134, 5, ["unox"]),
-    # MIDRAIDS
-    ("Midraids", "Aggorath", 1200, 960, ["aggy"]),
-    ("Midraids", "Mordris", 1200, 960, ["mord","mordy"]),
-    ("Midraids", "Necromancer", 1320, 960, ["necro"]),
-    ("Midraids", "Hrungnir", 1320, 960, ["hrung","muk"]),
-    # RINGS
+
+    # RINGS (3h35m = 215m; window 50m)
     ("Rings", "North Ring", 215, 50, ["northring"]),
-    ("Rings", "Center Ring", 215, 50, ["centre","centering"]),
+    ("Rings", "Center Ring", 215, 50, ["centre", "centering"]),
     ("Rings", "South Ring", 215, 50, ["southring"]),
     ("Rings", "East Ring", 215, 50, ["eastring"]),
+
     # EG
-    ("EG", "Draig Liathphur", 240, 840, ["draig","dragon","riverdragon"]),
-    ("EG", "Sciathan Leathair", 240, 300, ["sciathan","bat","northbat"]),
-    ("EG", "Thymea Banebark", 240, 840, ["thymea","tree","ancienttree"]),
-    ("EG", "Proteus", 1080, 15, ["prot","base","prime"]),
-    ("EG", "Gelebron", 1920, 1680, ["gele"]),
-    ("EG", "Dhiothu", 2040, 1680, ["dino","dhio","d2"]),
-    ("EG", "Bloodthorn", 2040, 1680, ["bt"]),
-    ("EG", "Crom’s Manikin", 5760, 1440, ["manikin","crom","croms"]),
+    ("EG", "Draig Liathphur", 240, 840, ["draig", "dragon", "riverdragon"]),     # 4h / 14h
+    ("EG", "Sciathan Leathair", 240, 300, ["sciathan", "bat", "northbat"]),      # 4h / 5h
+    ("EG", "Thymea Banebark", 240, 840, ["thymea", "tree", "ancienttree"]),      # 4h / 14h
+    ("EG", "Proteus", 1080, 15, ["prot", "base", "prime"]),                      # 18h / 15m
+    ("EG", "Gelebron", 1920, 1680, ["gele"]),                                     # 32h / 28h
+    ("EG", "Dhiothu", 2040, 1680, ["dino", "dhio", "d2"]),                        # 34h / 28h
+    ("EG", "Bloodthorn", 2040, 1680, ["bt"]),                                     # 34h / 28h
+    ("EG", "Crom’s Manikin", 5760, 1440, ["manikin", "crom", "croms"]),          # 96h / 24h
+
+    # MIDRAIDS
+    ("Midraids", "Aggorath", 1200, 960, ["aggy"]),                                # 20h / 16h
+    ("Midraids", "Mordris", 1200, 960, ["mord", "mordy"]),                        # 20h / 16h
+    ("Midraids", "Necromancer", 1320, 960, ["necro"]),                             # 22h / 16h
+    ("Midraids", "Hrungnir", 1320, 960, ["hrung", "muk"]),                         # 22h / 16h
 ]
 
+# Build a quick index for enforcement
+SEED_INDEX: Dict[Tuple[str, str], Tuple[int, int, List[str]]] = {
+    (norm_cat(cat), name): (spawn_m, window_m, aliases)
+    for (cat, name, spawn_m, window_m, aliases) in SEED_DATA
+}
+
 async def ensure_seed_for_guild(guild: discord.Guild):
-    """Idempotent seeding; also corrects DL '180' to 88/3 and adds aliases."""
+    """
+    Idempotent seeding + strict enforcement:
+      - Insert any missing seed bosses with exact spawn/window minutes and aliases.
+      - For existing bosses that are in the seed, UPDATE spawn_minutes/window_minutes if they differ.
+      - Add missing aliases (ignore dup/unique constraint).
+      - Does NOT delete any extra bosses you’ve added manually.
+    """
     key = f"seed:{SEED_VERSION}:g{guild.id}"
     already = await meta_get(key)
+
     inserted = 0
-    alias_ct = 0
+    updated = 0
+    alias_added = 0
+
     async with aiosqlite.connect(DB_PATH) as db:
+        # Load existing bosses for this guild
+        c = await db.execute("SELECT id,name,category,spawn_minutes,window_minutes FROM bosses WHERE guild_id=?", (guild.id,))
+        existing = await c.fetchall()
+
+        # Map existing by (cat,name)
+        existing_map: Dict[Tuple[str, str], Tuple[int, int, int]] = {}  # (cat,name) -> (boss_id, spawn, window)
+        for bid, nm, cat, sp, win in existing:
+            existing_map[(norm_cat(cat), nm)] = (int(bid), int(sp), int(win))
+
+        # Enforce each seed item
         for cat, name, spawn_m, window_m, aliases in SEED_DATA:
-            catn = norm_cat(cat)
-            c = await db.execute("SELECT id,spawn_minutes,window_minutes FROM bosses WHERE guild_id=? AND name=? AND category=?", (guild.id, name, catn))
-            r = await c.fetchone()
-            if r:
-                bid, cur_spawn, cur_win = int(r[0]), int(r[1]), int(r[2])
-                # Correction for DL 180 specifically
-                if catn == "DL" and name == "180" and (cur_spawn != 88 or cur_win != 3):
-                    await db.execute("UPDATE bosses SET spawn_minutes=?, window_minutes=? WHERE id=?", (88, 3, bid))
-                # add aliases (ignore duplicates)
+            key_cn = (norm_cat(cat), name)
+            if key_cn in existing_map:
+                bid, cur_sp, cur_win = existing_map[key_cn]
+                need_update = (cur_sp != spawn_m) or (cur_win != window_m)
+                if need_update:
+                    await db.execute("UPDATE bosses SET spawn_minutes=?, window_minutes=? WHERE id=?", (spawn_m, window_m, bid))
+                    updated += 1
+                # ensure aliases
                 for al in aliases:
                     try:
                         await db.execute("INSERT INTO boss_aliases (guild_id,boss_id,alias) VALUES (?,?,?)",
                                          (guild.id, bid, str(al).strip().lower()))
-                        alias_ct += 1
+                        alias_added += 1
                     except Exception:
                         pass
-                continue
-            # Insert new
-            next_spawn = now_ts() - 3601  # -Nada default
-            await db.execute(
-                "INSERT INTO bosses (guild_id,channel_id,name,spawn_minutes,window_minutes,next_spawn_ts,pre_announce_min,created_by,category,sort_key) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (guild.id, None, name, int(spawn_m), int(window_m), next_spawn, 10, guild.owner_id if guild.owner_id else 0, catn, "")
-            )
-            inserted += 1
-            c = await db.execute("SELECT id FROM bosses WHERE guild_id=? AND name=? AND category=?", (guild.id, name, catn))
-            bid = (await c.fetchone())[0]
-            for al in aliases:
-                try:
-                    await db.execute("INSERT INTO boss_aliases (guild_id,boss_id,alias) VALUES (?,?,?)",
-                                     (guild.id, bid, str(al).strip().lower()))
-                    alias_ct += 1
-                except Exception:
-                    pass
+            else:
+                # Insert new with -Nada default next_spawn_ts
+                next_spawn = now_ts() - 3601
+                await db.execute(
+                    "INSERT INTO bosses (guild_id,channel_id,name,spawn_minutes,window_minutes,next_spawn_ts,pre_announce_min,created_by,category,sort_key) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (guild.id, None, name, int(spawn_m), int(window_m), next_spawn, 10, guild.owner_id if guild.owner_id else 0, norm_cat(cat), "")
+                )
+                inserted += 1
+                # fetch id and add aliases
+                c = await db.execute("SELECT id FROM bosses WHERE guild_id=? AND name=? AND category=?", (guild.id, name, norm_cat(cat)))
+                bid = (await c.fetchone())[0]
+                for al in aliases:
+                    try:
+                        await db.execute("INSERT INTO boss_aliases (guild_id,boss_id,alias) VALUES (?,?,?)",
+                                         (guild.id, bid, str(al).strip().lower()))
+                        alias_added += 1
+                    except Exception:
+                        pass
+
         await db.commit()
+
+    # Mark seed version noted (we still enforce on every run; this is informational)
     if already != "done":
         await meta_set(key, "done")
-    if inserted or alias_ct:
-        log.info(f"Seeded {inserted} bosses, {alias_ct} aliases for guild {guild.id}")
+
+    if inserted or updated or alias_added:
+        log.info(f"[seed] g{guild.id}: inserted={inserted}, updated={updated}, aliases_added={alias_added}")
+
+    # Rebuild panels so any ordering/labels reflect changes
     await refresh_subscription_messages(guild)
 
 # -------------------- EVENTS --------------------
@@ -843,7 +881,7 @@ async def on_ready():
     await meta_set("last_startup_ts", str(now_ts()))
     await boot_offline_processing()
 
-    # Seed & panels
+    # Seed & panels (with strict enforcement)
     for g in bot.guilds:
         await ensure_seed_for_guild(g)
 
