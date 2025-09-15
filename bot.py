@@ -406,7 +406,8 @@ async def resolve_announce_channel(guild_id: int, explicit_channel_id: Optional[
         if r and r[0]:
             ch = guild.get_channel(r[0])
             if can_send(ch): return ch
-    for ch in bot.get_guild(guild_id).text_channels:
+    # Safety tweak: use the already-fetched guild object
+    for ch in guild.text_channels:
         if can_send(ch): return ch
     return None
 
@@ -627,6 +628,7 @@ async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_n
         txt = f"🕑 {mentions} — **{boss_name}** Spawn Window has opened!"
     try: await ch.send(txt)
     except Exception as e: log.warning(f"Sub ping failed: {e}")
+
 # -------------------- Part 2/4 — prefs, resolve, boot/offline, seed, events --------------------
 # -------------------- Part 2/4 — prefs, resolve, boot/offline, seed, events --------------------
 
@@ -930,7 +932,6 @@ async def on_member_remove(member: discord.Member):
     if member.guild:
         _guild_auth_cache.pop(member.guild.id, None)
 # -------------------- Part 3/4 — loops, auth-aware message flow, reactions, blacklist, perms --------------------
-# -------------------- Part 3/4 — loops, auth-aware message flow, reactions, blacklist, perms --------------------
 
 # -------- BLACKLIST HELPERS & GLOBAL CHECK --------
 async def is_blacklisted(guild_id: int, user_id: int) -> bool:
@@ -1028,13 +1029,7 @@ async def timers_tick():
         due_rows = await c.fetchall()
 
     for bid, gid, ch_id, name, next_ts, cat in due_rows:
-        # avoid duplicate spam for bosses that were due before boot and already reported in boot_offline_processing
-        if bid in muted_due_on_boot:
-            try:
-                muted_due_on_boot.remove(bid)
-            except KeyError:
-                pass
-            continue
+        # only when threshold crossed this tick (prevents boot spam)
         if not (prev < int(next_ts) <= now):
             continue
         key = f"{gid}:{bid}:WINDOW:{next_ts}"
@@ -1103,7 +1098,7 @@ async def on_message(message: discord.Message):
                         await db.commit()
                     if can_send(message.channel):
                         await message.channel.send(f":crossed_swords: **{nm}** killed. Next **Spawn Time** in `{mins}m`.")
-                    # refreshing panels is nice here so the order/times reflect the new state
+                    # refreshing panels so the order/times reflect the new state
                     await refresh_subscription_messages(message.guild)
                     return
                 else:
@@ -1187,7 +1182,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
             member = guild.get_member(payload.user_id) or await guild.fetch_member(payload.user_id)
             async with aiosqlite.connect(DB_PATH) as db:
                 c = await db.execute("SELECT role_id FROM rr_map WHERE panel_message_id=? AND emoji=?", (payload.message_id, emoji_str))
-                row = await c.fetchone()   # <-- fixed (was db.fetchone())
+                row = await c.fetchone()  # FIXED: use cursor.fetchone(), not db.fetchone()
             if not row:
                 return
             role = guild.get_role(int(row[0]))
@@ -1195,6 +1190,955 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
                 await member.remove_roles(role, reason="Reaction role opt-out")
         except Exception as e:
             log.warning(f"Remove reaction-role failed: {e}")
+# -------- /timers (per-user UI endpoint) --------
+@app_commands.guild_only()
+@bot.tree.command(name="timers", description="Show timers with per-category toggles (ephemeral, remembers your selection)")
+async def slash_timers(interaction: discord.Interaction):
+    guild = interaction.guild
+    if not guild:
+        return await interaction.response.send_message("Use this in a server.", ephemeral=True)
+    if not await ensure_guild_auth(guild):
+        return await interaction.response.send_message("Bot disabled in this server.", ephemeral=True)
+    saved = await get_user_shown_categories(guild.id, interaction.user.id)
+    view = TimerToggleView(guild=guild, user_id=interaction.user.id, init_show=saved)
+    embeds = await build_timer_embeds_for_categories(guild, view.shown)
+    await interaction.response.send_message(
+        content=f"**Categories shown:** {', '.join(view.shown) if view.shown else '(none)'}",
+        embeds=embeds,
+        view=view,
+        ephemeral=True
+    )
+    view.message = await interaction.original_response()
+
+# -------- INTERVALS --------
+async def send_intervals_list(ctx):
+    gid = ctx.guild.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT name,category,spawn_minutes,window_minutes,pre_announce_min,sort_key FROM bosses WHERE guild_id=?", (gid,))
+        rows = await c.fetchall()
+    if not rows:
+        return await ctx.send("No bosses configured.")
+
+    grouped: Dict[str, List[tuple]] = {k: [] for k in CATEGORY_ORDER}
+    for name, cat, spawn_m, window_m, pre_m, sk in rows:
+        grouped.setdefault(norm_cat(cat), []).append((sk or "", name, int(spawn_m), int(window_m), int(pre_m)))
+
+    for cat in CATEGORY_ORDER:
+        items = grouped.get(cat, [])
+        if not items: continue
+        items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
+        lines: List[str] = []
+        for sk, nm, sp, win, pre in items:
+            lines.append(f"• **{nm}** — Respawn: {sp}m • Window: {win}m • Pre: {pre}m")
+        em = discord.Embed(
+            title=f"{category_emoji(cat)} {cat} — Intervals",
+            description="",
+            color=await get_category_color(gid, cat)
+        )
+        bucket = ""; chunks: List[str] = []
+        for line in lines:
+            if len(bucket) + len(line) + 1 > 1000:
+                chunks.append(bucket); bucket = line + "\n"
+            else:
+                bucket += line + "\n"
+        if bucket: chunks.append(bucket)
+        for i, ch in enumerate(chunks, 1):
+            em.add_field(name=f"{cat} ({i})" if len(chunks) > 1 else cat, value=ch, inline=False)
+        try:
+            await ctx.send(embed=em)
+        except Exception:
+            text_fallback = f"**{cat} — Intervals**\n" + "\n".join(lines)
+            if len(text_fallback) > 1990: text_fallback = text_fallback[:1985] + "…"
+            await ctx.send(text_fallback)
+
+@bot.command(name="intervals")
+async def intervals_cmd(ctx):
+    await send_intervals_list(ctx)
+
+@bot.group(name="boss", invoke_without_command=True)
+async def boss_group(ctx):
+    p = await get_guild_prefix(bot, ctx.message)
+    await ctx.send(f"Use `{p}help` for commands.")
+
+# -------- BOSS SUBCOMMANDS --------
+@boss_group.command(name="add")
+async def boss_add(ctx, *args):
+    """
+    !boss add "Name" <spawn_m> <window_m> [#channel] [pre_m] [category]
+    """
+    def _resolve_channel_id_from_arg(ctx, value: Optional[str]) -> Optional[int]:
+        if not value: return None
+        if isinstance(value, int): return value
+        s = str(value)
+        if s.startswith("<#") and s.endswith(">"): return int(s[2:-1])
+        if s.isdigit(): return int(s)
+        found = discord.utils.get(ctx.guild.channels, name=s.strip("#"))
+        return found.id if found else None
+
+    def _smart_parse_add(args: List[str], ctx: commands.Context) -> Tuple[str,int,int,Optional[int],int,str]:
+        text = " ".join(args).strip()
+        name = None
+        if '"' in text:
+            first = text.split('"', 1)[1]
+            name = first.split('"', 1)[0].strip()
+            remainder = (text.split('"', 1)[1]).split('"', 1)[1].strip()
+            tokens = [t for t in remainder.split() if t]
+        else:
+            tokens = args[:]
+        if name is None and tokens: name = tokens.pop(0)
+        spawn_m = None; window_m = 0; ch_id: Optional[int] = None; pre_m = 10; cat = "Default"
+        if tokens and tokens[0].lstrip("-").isdigit(): spawn_m = int(tokens.pop(0))
+        if tokens and tokens[0].lstrip("-").isdigit(): window_m = int(tokens.pop(0))
+        if tokens:
+            maybe_ch = _resolve_channel_id_from_arg(ctx, tokens[0])
+            if maybe_ch: ch_id = maybe_ch; tokens.pop(0)
+        if tokens and tokens[0].lstrip("-").isdigit(): pre_m = int(tokens.pop(0))
+        if tokens: cat = " ".join(tokens).strip()
+        if spawn_m is None: raise ValueError("Missing spawn_minutes.")
+        return name, int(spawn_m), int(max(0, window_m)), ch_id, int(max(0, pre_m)), norm_cat(cat)
+
+    try:
+        name, spawn_minutes, window_minutes, ch_id, pre_min, category = _smart_parse_add(list(args), ctx)
+    except Exception:
+        return await ctx.send('Format: `!boss add "Name" <spawn_m> <window_m> [#channel] [pre_m] [category]`')
+    next_spawn = now_ts() - 3601  # -Nada
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO bosses (guild_id,channel_id,name,spawn_minutes,window_minutes,next_spawn_ts,pre_announce_min,created_by,category) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (ctx.guild.id, ch_id, name, int(spawn_minutes), int(window_minutes), next_spawn, int(pre_min), ctx.author.id, category)
+        ); await db.commit()
+    await ctx.send(f":white_check_mark: Added **{name}** — every {spawn_minutes}m, window {window_minutes}m, pre {pre_min}m, cat {category}.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="idleall")
+@commands.has_permissions(manage_guild=True)
+async def boss_idleall(ctx):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET next_spawn_ts=? WHERE guild_id=?", (now_ts() - 3601, ctx.guild.id))
+        await db.commit()
+    await ctx.send(":white_check_mark: All timers set to **-Nada**.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="nada")
+@commands.has_permissions(manage_guild=True)
+async def boss_nada(ctx, *, name: str):
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET next_spawn_ts=? WHERE id=? AND guild_id=?", (now_ts() - 3601, bid, ctx.guild.id))
+        await db.commit()
+    await ctx.send(f":pause_button: **{nm}** set to **-Nada**.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="nadaall")
+@commands.has_permissions(manage_guild=True)
+async def boss_nadaall(ctx):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET next_spawn_ts=? WHERE guild_id=?", (now_ts() - 3601, ctx.guild.id))
+        await db.commit()
+    await ctx.send(":pause_button: **All bosses** set to **-Nada**.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="info")
+async def boss_info(ctx, *, name: str):
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "SELECT name,spawn_minutes,window_minutes,next_spawn_ts,channel_id,pre_announce_min,trusted_role_id,category,sort_key "
+            "FROM bosses WHERE id=? AND guild_id=?", (bid, ctx.guild.id)
+        )
+        r = await c.fetchone()
+    if not r: return await ctx.send("Boss not found.")
+    name, spawn_m, window_m, ts, ch_id, pre, role_id, cat, sort_key = r
+    left = int(ts) - now_ts()
+    when_small = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime('%H:%M UTC')
+    line1 = f"**{name}**\nCategory: {cat} | Sort: {sort_key or '(none)'}\n"
+    line2 = f"Respawn: {spawn_m}m | Window: {window_m}m\n"
+    line3 = f"Spawn Time: `{fmt_delta_for_list(left)}`"
+    line3b = f"\n> *ETA {when_small}*" if left > 0 else ""
+    line4 = f"\nPre: {pre}m | Channel: {f'<#{ch_id}>' if ch_id else 'Default/Category'} | Role: {f'<@&{role_id}>' if role_id else 'None'}"
+    await ctx.send(line1 + line2 + line3 + line3b + line4)
+
+@boss_group.command(name="killed")
+async def boss_killed(ctx, *, name: str):
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, mins = res
+    if not await has_trusted(ctx.author, ctx.guild.id, bid):
+        return await ctx.send(":no_entry: You don't have permission for this boss.")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET next_spawn_ts=? WHERE id=?", (now_ts() + int(mins) * 60, bid))
+        await db.commit()
+    await ctx.send(f":crossed_swords: **{nm}** killed. Next **Spawn Time** in `{mins}m`.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="increase")
+async def boss_increase(ctx, name: str, minutes: int):
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET next_spawn_ts=next_spawn_ts+(?*60) WHERE id=? AND guild_id=?", (int(minutes), bid, ctx.guild.id))
+        await db.commit()
+        c = await db.execute("SELECT next_spawn_ts FROM bosses WHERE id=? AND guild_id=?", (bid, ctx.guild.id))
+        ts = (await c.fetchone())[0]
+    await ctx.send(f":arrow_up: Increased **{nm}** by {minutes}m. Spawn Time: `{fmt_delta_for_list(int(ts) - now_ts())}`.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="reduce")
+async def boss_reduce(ctx, name: str, minutes: int):
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT next_spawn_ts FROM bosses WHERE id=? AND guild_id=?", (bid, ctx.guild.id))
+        ts_row = await c.fetchone()
+        if not ts_row: return await ctx.send("Boss not found.")
+        current_ts = int(ts_row[0]); new_ts = max(now_ts(), current_ts - int(minutes) * 60)
+        await db.execute("UPDATE bosses SET next_spawn_ts=? WHERE id=? AND guild_id=?", (new_ts, bid, ctx.guild.id))
+        await db.commit()
+    await ctx.send(f":arrow_down: Reduced **{nm}** by {minutes}m. Spawn Time: `{fmt_delta_for_list(new_ts - now_ts())}`.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="edit")
+@commands.has_permissions(manage_guild=True)
+async def boss_edit(ctx, name: str, field: str, value: str):
+    allowed = {"spawn_minutes", "window_minutes", "pre_announce_min", "name", "category", "sort_key"}
+    if field not in allowed: return await ctx.send(f"Editable: {', '.join(sorted(allowed))}")
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, _, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        if field in {"spawn_minutes", "window_minutes", "pre_announce_min"}:
+            try: v = int(value)
+            except ValueError: return await ctx.send("Value must be an integer.")
+            if field == "spawn_minutes" and v < 1: return await ctx.send(":no_entry: spawn_minutes must be >= 1.")
+            await db.execute(f"UPDATE bosses SET {field}=? WHERE id=?", (v, bid))
+        elif field == "category":
+            await db.execute("UPDATE bosses SET category=? WHERE id=?", (norm_cat(value), bid))
+        else:
+            await db.execute(f"UPDATE bosses SET {field}=? WHERE id=?", (value, bid))
+        await db.commit()
+    await ctx.send(":white_check_mark: Updated.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="delete")
+@commands.has_permissions(manage_guild=True)
+async def boss_delete(ctx, *, name: str):
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM bosses WHERE id=? AND guild_id=?", (bid, ctx.guild.id))
+        await db.execute("DELETE FROM subscription_emojis WHERE guild_id=? AND boss_id=?", (ctx.guild.id, bid))
+        await db.execute("DELETE FROM subscription_members WHERE guild_id=? AND boss_id=?", (ctx.guild.id, bid))
+        await db.execute("DELETE FROM boss_aliases WHERE guild_id=? AND boss_id=?", (ctx.guild.id, bid))
+        await db.commit()
+    await ctx.send(f":wastebasket: Deleted **{nm}**.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="setcategory")
+async def boss_setcategory(ctx, *, args: str):
+    ident = None; category = None
+    if '"' in args:
+        a, b = args.split('"', 1); ident = a.strip()
+        category = b.split('"', 1)[0].strip()
+    if not ident or not category:
+        parts = args.rsplit(" ", 1)
+        if len(parts) == 2: ident, category = parts[0].strip(), parts[1].strip()
+    if not ident or not category:
+        return await ctx.send('Format: `!boss setcategory <name> "<Category>"`')
+    res, err = await resolve_boss(ctx, ident)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET category=? WHERE id=? AND guild_id=?", (norm_cat(category), bid, ctx.guild.id))
+        await db.commit()
+    await ctx.send(f":label: **{nm}** → **{norm_cat(category)}**.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="setsort")
+async def boss_setsort(ctx, name: str, sort_key: str):
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET sort_key=? WHERE id=? AND guild_id=?", (sort_key, bid, ctx.guild.id))
+        await db.commit()
+    await ctx.send(f":1234: Sort key for **{nm}** set to `{sort_key}`.")
+    await refresh_subscription_messages(ctx.guild)
+
+@boss_group.command(name="setchannel")
+async def boss_setchannel(ctx, name: str, channel: discord.TextChannel):
+    if name.lower() in {"all"}:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE bosses SET channel_id=? WHERE guild_id=?", (channel.id, ctx.guild.id))
+            await db.commit()
+        return await ctx.send(f":satellite: All boss reminders → {channel.mention}.")
+    elif name.lower() in {"category","cat"}:
+        return await ctx.send('Use `!boss setchannelcat "<Category>" #chan`.')
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET channel_id=? WHERE id=? AND guild_id=?", (channel.id, bid, ctx.guild.id))
+        await db.commit()
+    await ctx.send(f":satellite: **{nm}** reminders → {channel.mention}.")
+
+@boss_group.command(name="setchannelall")
+@commands.has_permissions(manage_guild=True)
+async def boss_setchannelall(ctx, channel: discord.TextChannel):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET channel_id=? WHERE guild_id=?", (channel.id, ctx.guild.id))
+        await db.commit()
+    await ctx.send(f":satellite: All boss reminders → {channel.mention}.")
+
+@boss_group.command(name="setchannelcat")
+@commands.has_permissions(manage_guild=True)
+async def boss_setchannelcat(ctx, *, args: str):
+    def _resolve_channel_id_from_arg(ctx, value: Optional[str]) -> Optional[int]:
+        if not value: return None
+        if isinstance(value, int): return value
+        s = str(value)
+        if s.startswith("<#") and s.endswith(">"): return int(s[2:-1])
+        if s.isdigit(): return int(s)
+        found = discord.utils.get(ctx.guild.channels, name=s.strip("#"))
+        return found.id if found else None
+
+    if '"' in args:
+        cat = args.split('"',1)[1].split('"',1)[0].strip()
+        tail = args.split('"',2)[-1].strip()
+        ch_id = _resolve_channel_id_from_arg(ctx, tail.split()[-1]) if tail else None
+    else:
+        parts = args.rsplit(" ", 1)
+        if len(parts) != 2: return await ctx.send('Format: `!boss setchannelcat "<Category>" #chan`')
+        cat, ch_token = parts[0], parts[1]
+        ch_id = _resolve_channel_id_from_arg(ctx, ch_token)
+    if not cat or not ch_id: return await ctx.send('Format: `!boss setchannelcat "<Category>" #chan`')
+    catn = norm_cat(cat)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET channel_id=? WHERE guild_id=? AND category=?", (ch_id, ctx.guild.id, catn))
+        await db.commit()
+    await ctx.send(f":satellite: **{catn}** boss reminders → <#{ch_id}>.")
+
+@boss_group.command(name="setrole")
+@commands.has_permissions(manage_guild=True)
+async def boss_setrole(ctx, *args):
+    if not args:
+        return await ctx.send("Use `!boss setrole @Role` or `!boss setrole \"Name\" @Role` (or `none`).")
+    text = " ".join(args).strip()
+    if text.count('"') >= 2:
+        boss_name = text.split('"', 1)[1].split('"', 1)[0].strip()
+        remainder = text.split('"', 2)[-1].strip()
+        if not remainder: return await ctx.send("Provide a role or `none` after the boss name.")
+        role_arg = remainder
+        res, err = await resolve_boss(ctx, boss_name)
+        if err: return await ctx.send(f":no_entry: {err}")
+        bid, nm, _ = res
+        async with aiosqlite.connect(DB_PATH) as db:
+            if role_arg.lower() in ("none","clear"):
+                await db.execute("UPDATE bosses SET trusted_role_id=NULL WHERE id=? AND guild_id=?", (bid, ctx.guild.id))
+                await db.commit()
+                return await ctx.send(f":white_check_mark: Cleared reset role for **{nm}**.")
+            role_obj = None
+            if role_arg.startswith("<@&") and role_arg.endswith(">"):
+                try: role_obj = ctx.guild.get_role(int(role_arg[3:-1]))
+                except Exception: role_obj = None
+            if not role_obj: role_obj = discord.utils.get(ctx.guild.roles, name=role_arg)
+            if not role_obj: return await ctx.send("Role not found. Mention it or use exact name.")
+            await db.execute("UPDATE bosses SET trusted_role_id=? WHERE id=? AND guild_id=?", (role_obj.id, bid, ctx.guild.id))
+            await db.commit()
+        return await ctx.send(f":white_check_mark: **{nm}** now requires **{role_obj.name}** to reset.")
+    role_arg = text
+    if role_arg.lower() in ("none","clear"):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE bosses SET trusted_role_id=NULL WHERE guild_id=?", (ctx.guild.id,))
+            await db.commit()
+        return await ctx.send(":white_check_mark: Cleared reset role on all bosses.")
+    role_obj = None
+    if role_arg.startswith("<@&") and role_arg.endswith(">"):
+        try: role_obj = ctx.guild.get_role(int(role_arg[3:-1]))
+        except Exception: role_obj = None
+    if not role_obj: role_obj = discord.utils.get(ctx.guild.roles, name=role_arg)
+    if not role_obj: return await ctx.send("Role not found. Mention it or use exact name.")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET trusted_role_id=? WHERE guild_id=?", (role_obj.id, ctx.guild.id))
+        await db.commit()
+    await ctx.send(f":white_check_mark: All bosses now require **{role_obj.name}** to reset.")
+
+@boss_group.command(name="alias")
+@commands.has_permissions(manage_guild=True)
+async def boss_alias(ctx, action: str = None, *, args: str = ""):
+    action = (action or "").lower()
+    if action not in {"add","remove","list","aliases"}:
+        return await ctx.send('Use: `!boss alias add "Name" "Alias"`, `!boss alias remove "Name" "Alias"`, or `!boss aliases "Name"`')
+
+    def parse_two_quoted(s: str) -> Optional[Tuple[str,str]]:
+        s = s.strip()
+        if s.count('"') < 4: return None
+        first = s.split('"',1)[1].split('"',1)[0].strip()
+        rest = s.split('"',2)[-1].strip()
+        second = rest.split('"',1)[1].split('"',1)[0].strip() if rest.count('"')>=2 else None
+        return (first, second) if second else None
+
+    if action in {"add","remove"}:
+        parsed = parse_two_quoted(args)
+        if not parsed: return await ctx.send('Format: `!boss alias add "Name" "Alias"`')
+        boss_name, alias = parsed
+        res, err = await resolve_boss(ctx, boss_name)
+        if err: return await ctx.send(f":no_entry: {err}")
+        bid, nm, _ = res
+        async with aiosqlite.connect(DB_PATH) as db:
+            if action == "add":
+                try:
+                    await db.execute("INSERT INTO boss_aliases (guild_id,boss_id,alias) VALUES (?,?,?)",
+                                     (ctx.guild.id, bid, alias.lower()))
+                    await db.commit()
+                    await ctx.send(f":white_check_mark: Added alias **{alias}** → **{nm}**.")
+                except Exception:
+                    await ctx.send(f":warning: Could not add alias (maybe already used?)")
+            else:
+                await db.execute("DELETE FROM boss_aliases WHERE guild_id=? AND boss_id=? AND alias=?",
+                                 (ctx.guild.id, bid, alias.lower()))
+                await db.commit()
+                await ctx.send(f":white_check_mark: Removed alias **{alias}** from **{nm}**.")
+        return
+
+    name = args.strip().strip('"')
+    if not name:
+        return await ctx.send('Format: `!boss aliases "Boss Name"`')
+    res, err = await resolve_boss(ctx, name)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT alias FROM boss_aliases WHERE guild_id=? AND boss_id=? ORDER BY alias", (ctx.guild.id, bid))
+        rows = [r[0] for r in await c.fetchall()]
+    await ctx.send(f"**Aliases for {nm}:** " + (", ".join(rows) if rows else "*none*"))
+
+@boss_group.command(name="find")
+async def boss_find(ctx, *, ident: str):
+    res, err = await resolve_boss(ctx, ident)
+    if err: return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    await ctx.send(f"Matched: **{nm}**")
+
+# -------- BLACKLIST COMMANDS --------
+@bot.group(name="blacklist", invoke_without_command=True)
+@commands.has_permissions(manage_guild=True)
+async def blacklist_group(ctx):
+    await ctx.send("Use `!blacklist add @user` / `!blacklist remove @user` / `!blacklist show`")
+
+@blacklist_group.command(name="add")
+@commands.has_permissions(manage_guild=True)
+async def blacklist_add(ctx, user: discord.Member):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO blacklist (guild_id,user_id) VALUES (?,?)", (ctx.guild.id, user.id))
+        await db.commit()
+    await ctx.send(f":no_entry: **{user.display_name}** is now blacklisted.")
+
+@blacklist_group.command(name="remove")
+@commands.has_permissions(manage_guild=True)
+async def blacklist_remove(ctx, user: discord.Member):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM blacklist WHERE guild_id=? AND user_id=?", (ctx.guild.id, user.id))
+        await db.commit()
+    await ctx.send(f":white_check_mark: **{user.display_name}** removed from blacklist.")
+
+@blacklist_group.command(name="show")
+@commands.has_permissions(manage_guild=True)
+async def blacklist_show(ctx):
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT user_id FROM blacklist WHERE guild_id=?", (ctx.guild.id,))
+        rows = await c.fetchall()
+    if not rows: return await ctx.send("No users blacklisted.")
+    mentions = " ".join(f"<@{r[0]}>" for r in rows)
+    await ctx.send(f"Blacklisted: {mentions}")
+
+# -------- SERVER SETTINGS COMMANDS --------
+@bot.command(name="setprefix")
+@commands.has_permissions(manage_guild=True)
+async def setprefix_cmd(ctx, new_prefix: str):
+    if not new_prefix or len(new_prefix) > 5:
+        return await ctx.send("Pick a prefix 1–5 characters.")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO guild_config (guild_id,prefix) VALUES (?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET prefix=excluded.prefix",
+            (ctx.guild.id, new_prefix)
+        ); await db.commit()
+    await ctx.send(f":white_check_mark: Prefix set to `{new_prefix}`.")
+
+def _resolve_channel_id_from_arg(ctx, value: Optional[str]) -> Optional[int]:
+    if not value: return None
+    if isinstance(value, int): return value
+    s = str(value)
+    if s.startswith("<#") and s.endswith(">"): return int(s[2:-1])
+    if s.isdigit(): return int(s)
+    found = discord.utils.get(ctx.guild.channels, name=s.strip("#"))
+    return found.id if found else None
+
+@bot.command(name="setannounce")
+@commands.has_permissions(manage_guild=True)
+async def setannounce_cmd(ctx, *args):
+    if not args:
+        return await ctx.send("Usage: `!setannounce #chan` or `!setannounce category \"<Category>\" #chan`")
+    first = args[0].lower()
+    if first.startswith("<#") or first == "global" or (len(args) == 1 and args[0].isdigit()):
+        channel_id = _resolve_channel_id_from_arg(ctx, args[-1])
+        if not channel_id: return await ctx.send("Mention a channel, e.g., `#raids`.")
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO guild_config (guild_id,default_channel) VALUES (?,?) "
+                "ON CONFLICT(guild_id) DO UPDATE SET default_channel=excluded.default_channel",
+                (ctx.guild.id, channel_id)
+            ); await db.commit()
+        return await ctx.send(f":white_check_mark: Global announce channel set to <#{channel_id}>.")
+    if first in {"category", "categoryclear"}:
+        if first == "category":
+            if len(args) < 3: return await ctx.send('Format: `!setannounce category "<Category>" #chan`')
+            joined = " ".join(args[1:])
+            if '"' in joined:
+                cat = joined.split('"', 1)[1].split('"', 1)[0].strip()
+                tail = joined.split('"', 2)[-1].strip().split()
+                ch_id = _resolve_channel_id_from_arg(ctx, tail[-1]) if tail else None
+            else:
+                cat = " ".join(args[1:-1]).strip(); ch_id = _resolve_channel_id_from_arg(ctx, args[-1])
+            if not cat or not ch_id: return await ctx.send('Format: `!setannounce category "<Category>" #chan`')
+            catn = norm_cat(cat)
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "INSERT INTO category_channels (guild_id,category,channel_id) VALUES (?,?,?) "
+                    "ON CONFLICT(guild_id,category) DO UPDATE SET channel_id=excluded.channel_id",
+                    (ctx.guild.id, catn, ch_id)
+                ); await db.commit()
+            return await ctx.send(f":white_check_mark: **{catn}** reminders → <#{ch_id}>.")
+        else:
+            if len(args) < 2: return await ctx.send('Format: `!setannounce categoryclear "<Category>"`')
+            cat = " ".join(args[1:]).strip().strip('"')
+            catn = norm_cat(cat)
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("DELETE FROM category_channels WHERE guild_id=? AND category=?", (ctx.guild.id, catn))
+                await db.commit()
+            return await ctx.send(f":white_check_mark: Cleared category channel for **{catn}**.")
+    return await ctx.send("Usage: `!setannounce #chan` | `!setannounce global #chan` | `!setannounce category \"<Category>\" #chan` | `!setannounce categoryclear \"<Category>\"`")
+
+@bot.command(name="seteta")
+@commands.has_permissions(manage_guild=True)
+async def seteta_cmd(ctx, state: str):
+    val = state.strip().lower()
+    if val not in {"on","off","true","false","1","0","yes","no"}:
+        return await ctx.send("Use `!seteta on` or `!seteta off`.")
+    on = val in {"on","true","1","yes"}
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO guild_config (guild_id,show_eta) VALUES (?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET show_eta=excluded.show_eta",
+            (ctx.guild.id, 1 if on else 0)
+        ); await db.commit()
+    await ctx.send(f":white_check_mark: UTC ETA display {'enabled' if on else 'disabled'}.")
+
+@bot.command(name="setuptime")
+@commands.has_permissions(manage_guild=True)
+async def setuptime_cmd(ctx, minutes: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO guild_config (guild_id,uptime_minutes) VALUES (?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET uptime_minutes=excluded.uptime_minutes",
+            (ctx.guild.id, max(-1, int(minutes)))
+        ); await db.commit()
+    await ctx.send(":white_check_mark: Uptime heartbeat disabled." if minutes <= 0
+                   else f":white_check_mark: Uptime heartbeat set to every {minutes} minutes.")
+
+@bot.command(name="setheartbeatchannel")
+@commands.has_permissions(manage_guild=True)
+async def setheartbeatchannel_cmd(ctx, channel: discord.TextChannel):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO guild_config (guild_id,heartbeat_channel_id) VALUES (?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET heartbeat_channel_id=excluded.heartbeat_channel_id",
+            (ctx.guild.id, channel.id)
+        ); await db.commit()
+    await ctx.send(f":white_check_mark: Heartbeat channel set to {channel.mention}.")
+
+@bot.command(name="setsubchannel")
+@commands.has_permissions(manage_guild=True)
+async def setsubchannel_cmd(ctx, channel: discord.TextChannel):
+    await delete_old_subscription_messages(ctx.guild)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO guild_config (guild_id,sub_channel_id) VALUES (?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET sub_channel_id=excluded.sub_channel_id",
+            (ctx.guild.id, channel.id)
+        ); await db.commit()
+    await ctx.send(f":white_check_mark: Subscription **panels** channel set to {channel.mention}. Rebuilding panels…")
+    await refresh_subscription_messages(ctx.guild)
+    await ctx.send(":white_check_mark: Subscription panels are ready.")
+
+@bot.command(name="setsubpingchannel")
+@commands.has_permissions(manage_guild=True)
+async def setsubpingchannel_cmd(ctx, channel: discord.TextChannel):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO guild_config (guild_id,sub_ping_channel_id) VALUES (?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET sub_ping_channel_id=excluded.sub_ping_channel_id",
+            (ctx.guild.id, channel.id)
+        ); await db.commit()
+    await ctx.send(f":white_check_mark: Subscription **ping** channel set to {channel.mention}.")
+
+@bot.command(name="showsubscriptions")
+async def showsubscriptions_cmd(ctx):
+    await refresh_subscription_messages(ctx.guild)
+    await ctx.send(":white_check_mark: Subscription panels refreshed (one per category).")
+
+# -------- NEW: SETPREANNOUNCE FAMILY --------
+@bot.command(name="setpreannounce")
+@commands.has_permissions(manage_guild=True)
+async def setpreannounce_cmd(ctx, *, args: str):
+    """
+    Dedicated family to set pre-announce minutes.
+    Usage:
+      • !setpreannounce "Boss Name" <m|off>
+      • !setpreannounce category "<Category>" <m|off>
+      • !setpreannounce all <m|off>
+    Notes:
+      - 'off' / 'none' / '0' disables pre-announces (sets 0).
+      - Minutes are capped between 0 and 10080 (7 days) to avoid accidental huge values.
+    """
+    text = (args or "").strip()
+    if not text:
+        return await ctx.send('Usage: `!setpreannounce "Boss Name" <m|off>` | `!setpreannounce category "<Category>" <m|off>` | `!setpreannounce all <m|off>`')
+
+    def parse_minutes(tok: str) -> Optional[int]:
+        tl = (tok or "").strip().lower()
+        if tl in {"off","none","disable","disabled","0"}: return 0
+        if tl.endswith("m"): tl = tl[:-1]
+        if not tl.lstrip("-").isdigit(): return None
+        val = int(tl)
+        if val < 0: val = 0
+        if val > 10080: val = 10080
+        return val
+
+    # all-mode
+    if text.lower().startswith("all"):
+        rest = text[3:].strip()
+        if not rest:
+            return await ctx.send("Provide minutes, e.g., `!setpreannounce all 10` or `off`.")
+        m = parse_minutes(rest.split()[-1])
+        if m is None:
+            return await ctx.send("Minutes must be a number or `off`.")
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE bosses SET pre_announce_min=? WHERE guild_id=?", (m, ctx.guild.id))
+            await db.commit()
+        return await ctx.send(f":white_check_mark: Pre-announce for **all bosses** set to **{m}m**." if m else ":white_check_mark: Pre-announce **disabled** for all bosses.")
+
+    # category-mode
+    if text.lower().startswith("category"):
+        after = text[len("category"):].strip()
+        cat = None; minutes_tok = None
+        if after.startswith('"') and after.count('"') >= 2:
+            cat = after.split('"',1)[1].split('"',1)[0].strip()
+            tail = after.split('"',2)[-1].strip()
+            if not tail:
+                return await ctx.send('Provide minutes after the category, e.g., `!setpreannounce category "Frozen" 8`.')
+            minutes_tok = tail.split()[-1]
+        else:
+            parts = after.split()
+            if len(parts) < 2:
+                return await ctx.send('Format: `!setpreannounce category "<Category>" <m|off>`')
+            minutes_tok = parts[-1]
+            cat = " ".join(parts[:-1]).strip()
+        m = parse_minutes(minutes_tok or "")
+        if m is None:
+            return await ctx.send("Minutes must be a number or `off`.")
+        catn = norm_cat(cat)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE bosses SET pre_announce_min=? WHERE guild_id=? AND category=?", (m, ctx.guild.id, catn))
+            await db.commit()
+        return await ctx.send(f":white_check_mark: Pre-announce for **{catn}** set to **{m}m**." if m else f":white_check_mark: Pre-announce **disabled** for **{catn}**.")
+
+    # per-boss mode
+    name = None; minutes_tok = None
+    if text.startswith('"') and text.count('"') >= 2:
+        name = text.split('"',1)[1].split('"',1)[0].strip()
+        tail = text.split('"',2)[-1].strip()
+        if not tail:
+            return await ctx.send('Provide minutes after the name, e.g., `!setpreannounce "Grom" 12`.')
+        minutes_tok = tail.split()[-1]
+    else:
+        parts = text.split()
+        if len(parts) < 2:
+            return await ctx.send('Format: `!setpreannounce "Boss Name" <m|off>`')
+        minutes_tok = parts[-1]
+        name = " ".join(parts[:-1]).strip()
+
+    m = parse_minutes(minutes_tok or "")
+    if m is None:
+        return await ctx.send("Minutes must be a number or `off`.")
+
+    res, err = await resolve_boss(ctx, name)
+    if err:
+        return await ctx.send(f":no_entry: {err}")
+    bid, nm, _ = res
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bosses SET pre_announce_min=? WHERE id=? AND guild_id=?", (m, bid, ctx.guild.id))
+        await db.commit()
+    await ctx.send(f":white_check_mark: Pre-announce for **{nm}** set to **{m}m**." if m else f":white_check_mark: Pre-announce **disabled** for **{nm}**.")
+
+# -------- REACTION ROLES (slash) --------
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_roles=True)
+@bot.tree.command(name="roles_panel", description="Create a reaction-roles message (react to get/remove roles).")
+async def roles_panel(interaction: discord.Interaction,
+                      channel: Optional[discord.TextChannel] = None,
+                      title: str = "Roles",
+                      pairs: str = ""):
+    if not interaction.user.guild_permissions.manage_roles:
+        return await interaction.response.send_message("You need Manage Roles permission.", ephemeral=True)
+    ch = channel or interaction.channel
+    if not can_send(ch):
+        return await interaction.response.send_message("I can't post in that channel.", ephemeral=True)
+    entries = [e.strip() for e in pairs.split(",") if e.strip()]
+    parsed: List[Tuple[str, int, str]] = []
+    role_mention_re = re.compile(r"<@&(\d+)>")
+    for entry in entries:
+        parts = entry.split()
+        if not parts: continue
+        emoji = parts[0]
+        m = role_mention_re.search(entry)
+        if not m:
+            return await interaction.response.send_message(f"Missing role mention in `{entry}`.", ephemeral=True)
+        role_id = int(m.group(1))
+        role = interaction.guild.get_role(role_id)
+        if not role:
+            return await interaction.response.send_message(f"Role not found in `{entry}`.", ephemeral=True)
+        parsed.append((emoji, role_id, role.name))
+    if not parsed:
+        return await interaction.response.send_message("No valid emoji/role pairs found.", ephemeral=True)
+    desc_lines = [f"{em} — <@&{rid}> ({rname})" for em, rid, rname in parsed]
+    embed = discord.Embed(title=title, description="\n".join(desc_lines), color=0x4aa3ff)
+    try:
+        msg = await ch.send(embed=embed)
+    except Exception as e:
+        return await interaction.response.send_message(f"Couldn't post panel: {e}", ephemeral=True)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO rr_panels (message_id,guild_id,channel_id,title) VALUES (?,?,?,?)",
+                         (msg.id, interaction.guild_id, ch.id, title))
+        for em, rid, _ in parsed:
+            await db.execute("INSERT OR REPLACE INTO rr_map (panel_message_id,emoji,role_id) VALUES (?,?,?)",
+                             (msg.id, em, rid))
+        await db.commit()
+    for em, _, _ in parsed:
+        try:
+            await msg.add_reaction(em)
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
+    await interaction.response.send_message(f"Reaction-roles panel posted in {ch.mention}.", ephemeral=True)
+
+# -------- OPTIONAL POWERSHELL (slash) --------
+def _find_pwsh_exe() -> Optional[str]:
+    for exe in ("pwsh", "powershell", "powershell.exe", "pwsh.exe"):
+        path = shutil.which(exe)
+        if path:
+            return path
+    return None
+
+@app_commands.guild_only()
+@bot.tree.command(name="ps", description="Run a PowerShell command on the bot host (Admins only; requires ALLOW_POWERSHELL=1)")
+async def ps_run(interaction: discord.Interaction, command: str):
+    if not ALLOW_POWERSHELL:
+        return await interaction.response.send_message("PowerShell execution is disabled. Set `ALLOW_POWERSHELL=1` to enable.", ephemeral=True)
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("Admins only.", ephemeral=True)
+    exe = _find_pwsh_exe()
+    if not exe:
+        return await interaction.response.send_message("No PowerShell executable found on host.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            exe, "-NoProfile", "-NonInteractive", "-Command", command,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return await interaction.followup.send("⏱️ Timed out after 20s.", ephemeral=True)
+        rc = proc.returncode
+        out = (stdout or b"").decode("utf-8", errors="replace")
+        err = (stderr or b"").decode("utf-8", errors="replace")
+        blob = f"$ {command}\n\n[exit {rc}]\n\nSTDOUT:\n{out}\n\nSTDERR:\n{err}"
+        if len(blob) <= 1900:
+            await interaction.followup.send(f"```text\n{blob}\n```", ephemeral=True)
+        else:
+            fp = io.BytesIO(blob.encode("utf-8"))
+            fp.name = "ps_output.txt"
+            await interaction.followup.send(content="Output attached (truncated in chat).", file=discord.File(fp, filename="ps_output.txt"), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f":warning: {e}", ephemeral=True)
+
+# -------- HELP / STATUS / HEALTH --------
+@bot.command(name="help")
+async def help_cmd(ctx):
+    p = await get_guild_prefix(bot, ctx.message)
+    lines = [
+        f"**Boss Tracker — Commands**",
+        "",
+        f"**Essentials**",
+        f"• Timers: `{p}timers`  • Intervals: `{p}intervals`",
+        f"• Quick reset: `{p}<BossOrAlias>`  (e.g., `{p}snorri`)",
+        "",
+        f"**Boss Ops**",
+        f"• Add: `{p}boss add \"Name\" <spawn_m> <window_m> [#chan] [pre_m] [category]`",
+        f"• Killed: `{p}boss killed \"Name\"` • Increase/Reduce: `{p}boss increase|reduce \"Name\" <m>`",
+        f"• Idle/Nada: `{p}boss nada \"Name\"` • All Idle: `{p}boss nadaall`",
+        f"• Edit: `{p}boss edit \"Name\" <spawn_minutes|window_minutes|pre_announce_min|name|category|sort_key> <value>`",
+        f"• Channel routing: `{p}boss setchannel \"Name\" #chan` • All: `{p}boss setchannelall #chan` • By category: `{p}boss setchannelcat \"Category\" #chan`",
+        f"• Role for reset: `{p}boss setrole @Role` • Clear: `{p}boss setrole none` • Per-boss: `{p}boss setrole \"Name\" @Role`",
+        f"• Aliases: `{p}boss alias add|remove \"Name\" \"alias\"` • List: `{p}boss aliases \"Name\"`",
+        "",
+        f"**Subscriptions**",
+        f"• Panels channel: `{p}setsubchannel #panels` • Refresh: `{p}showsubscriptions`",
+        f"• Ping channel: `{p}setsubpingchannel #pings`",
+        "",
+        f"**Server Settings**",
+        f"• Announce: `{p}setannounce #chan` • Category route: `{p}setannounce category \"Category\" #chan`",
+        f"• ETA: `{p}seteta on|off` • Colors: `{p}setcatcolor <Category> <#hex>`",
+        f"• Heartbeat: `{p}setuptime <minutes>` • HB channel: `{p}setheartbeatchannel #chan`",
+        f"• Prefix: `{p}setprefix <new>`",
+        f"• **Pre-announce**: per-boss `{p}setpreannounce \"Name\" <m|off>` • per-category `{p}setpreannounce category \"Category\" <m|off>` • all `{p}setpreannounce all <m|off>`",
+        "",
+        f"**Status**",
+        f"• `{p}status` • `{p}health`",
+        "",
+        f"**Slash**",
+        f"• `/timers` (ephemeral with per-user category toggles)",
+        f"• `/roles_panel channel:<#> title:<...> pairs:\"😀 @Role, 🔔 @Role\"`",
+    ]
+    text = "\n".join(lines)
+    if len(text) > 1990: text = text[:1985] + "…"
+    if can_send(ctx.channel): await ctx.send(text)
+
+@bot.command(name="status")
+async def status_cmd(ctx):
+    gid = ctx.guild.id; p = await get_guild_prefix(bot, ctx.message)
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "SELECT COALESCE(prefix, ?), default_channel, sub_channel_id, sub_ping_channel_id, "
+            "COALESCE(uptime_minutes, ?), heartbeat_channel_id, COALESCE(show_eta,0) "
+            "FROM guild_config WHERE guild_id=?",
+            (DEFAULT_PREFIX, DEFAULT_UPTIME_MINUTES, gid)
+        )
+        r = await c.fetchone()
+        prefix, ann_id, sub_id, sub_ping_id, hb_min, hb_ch, show_eta = (r if r else (DEFAULT_PREFIX, None, None, None, DEFAULT_UPTIME_MINUTES, None, 0))
+        c = await db.execute("SELECT COUNT(*) FROM bosses WHERE guild_id=?", (gid,))
+        boss_count = (await c.fetchone())[0]
+        now_n = now_ts()
+        c = await db.execute("SELECT next_spawn_ts FROM bosses WHERE guild_id=?", (gid,))
+        times = [int(x[0]) for x in await c.fetchall()]
+        due = sum(1 for t in times if t <= now_n)
+        nada = sum(1 for t in times if (now_n - t) > NADA_GRACE_SECONDS)
+        c = await db.execute("SELECT category,channel_id FROM category_channels WHERE guild_id=?", (gid,))
+        cat_map = {row[0]: row[1] for row in await c.fetchall()}
+        c = await db.execute("SELECT category FROM category_colors WHERE guild_id=?", (gid,))
+        overridden = sorted({norm_cat(row[0]) for row in await c.fetchall()})
+    last_start = await meta_get("last_startup_ts")
+    hb_label = "off" if int(hb_min) <= 0 else f"every {int(hb_min)}m"
+    def ch(idv): return f"<#{idv}>" if idv else "—"
+    lines = [
+        f"**Status**",
+        f"Prefix: `{prefix}` (change: `{p}setprefix <new>`) ",
+        f"Announce channel (global): {ch(ann_id)}",
+        f"Category overrides: " + (", ".join(f"{k}→{ch(v)}" for k,v in cat_map.items()) if cat_map else "none"),
+        f"Subscription panels: {ch(sub_id)} • Subscription pings: {ch(sub_ping_id)}",
+        f"Heartbeat: {hb_label} • Channel: {ch(hb_ch)}",
+        f"UTC ETA: {'on' if show_eta else 'off'}",
+        f"Bosses: {boss_count} • Due now: {due} • -Nada: {nada}",
+        f"Color overrides: {', '.join(overridden) if overridden else 'none'}",
+        f"Last startup: {ts_to_utc(int(last_start)) if last_start and last_start.isdigit() else '—'}",
+    ]
+    await ctx.send("\n".join(lines))
+
+@bot.command(name="health")
+@commands.has_permissions(administrator=True)
+async def health_cmd(ctx):
+    required = {"bosses","guild_config","meta","category_colors","subscription_emojis","subscription_members",
+                "boss_aliases","category_channels","user_timer_prefs","subscription_panels","rr_panels","rr_map","blacklist"}
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        present = {row[0] for row in await c.fetchall()}
+        c = await db.execute("SELECT COUNT(*) FROM guild_config WHERE guild_id=?", (ctx.guild.id,))
+        cfg_rows = (await c.fetchone())[0]
+    missing = sorted(list(required - present))
+    tick_age = now_ts() - _last_timer_tick_ts if _last_timer_tick_ts else None
+    lines = [
+        "**Health**",
+        f"DB: `{DB_PATH}`",
+        f"Tables OK: {'yes' if not missing else 'no'}{'' if not missing else ' (missing: ' + ', '.join(missing) + ')'}",
+        f"Timers loop: {'running' if timers_tick.is_running() else 'stopped'}",
+        f"Heartbeat loop: {'running' if uptime_heartbeat.is_running() else 'stopped'}",
+        f"Last timer tick: {ts_to_utc(_last_timer_tick_ts) if _last_timer_tick_ts else '—'}"
+        + (f" ({human_ago(tick_age)})" if tick_age is not None else ""),
+        f"guild_config row present: {'yes' if cfg_rows > 0 else 'no'}",
+    ]
+    await ctx.send("\n".join(lines))
+
+# -------- SHOW ETA FLAG (used by timers displays) --------
+async def get_show_eta(guild_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT COALESCE(show_eta,0) FROM guild_config WHERE guild_id=?", (guild_id,))
+        r = await c.fetchone()
+        return bool(r and int(r[0]) == 1)
+
+# -------- ERRORS --------
+@bot.event
+async def on_command_error(ctx, error):
+    from discord.ext import commands as ext
+    if isinstance(error, ext.CommandNotFound): return
+    try: await ctx.send(f":warning: {error}")
+    except Exception: pass
+
+# --- Interaction reply helper to avoid "Application did not respond" ---
+async def ireply(
+    inter: discord.Interaction,
+    content: Optional[str] = None,
+    *,
+    embed: Optional[discord.Embed] = None,
+    embeds: Optional[List[discord.Embed]] = None,
+    ephemeral: bool = True
+):
+    """Reply safely whether we've already deferred or not."""
+    try:
+        if inter.response.is_done():
+            await inter.followup.send(content=content, embed=embed, embeds=embeds, ephemeral=ephemeral)
+        else:
+            await inter.response.send_message(content=content, embed=embed, embeds=embeds, ephemeral=ephemeral)
+    except Exception as e:
+        log.warning(f"ireply error: {e}")
+
+# -------- SHUTDOWN --------
+async def graceful_shutdown(_sig=None):
+    try: await meta_set("offline_since", str(now_ts()))
+    finally: await bot.close()
+
+@atexit.register
+def _persist_offline_since_on_exit():
+    try:
+        import sqlite3, time
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("offline_since", str(int(time.time())))
+        )
+        conn.commit(); conn.close()
+    except Exception:
+        pass
+
 # -------------------- Lixing & Market (Slash Add-on) --------------------
 # Design:
 # - No subscriber pings. Posts always go to a configured channel per section (lix/market)
@@ -1209,10 +2153,6 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 # - listings(id, guild_id, section, topic_key, author_id, text, text_hash, created_ts, last_ping_ts, expires_ts, channel_id, message_id)
 #
 # Sections: 'lix' (lixing/LFG) and 'market' (trade)
-#
-# Slash groups provided:
-#   /lix set_channel, set_role, topics add|remove|list, post, browse, bump, close
-#   /market set_channel, set_role, topics add|remove|list, post, browse, bump, close
 
 LM_SEC_LIX = "lix"
 LM_SEC_MARKET = "market"
@@ -1388,8 +2328,8 @@ async def lm_post_listing(
     mention = f"<@&{role_id}> " if role_id else ""
 
     # topic emoji (if any)
-    topic_rows = await lm_get_topics(gid, section)
-    emoji = next((e for k, e, _ in topic_rows if k.lower() == topic_key.lower()), "🔔")
+    topics = await lm_get_topics(gid, section)
+    emoji = next((e for k, e, _ in topics if k.lower() == topic_key.lower()), "🔔")
 
     # build post
     title = "LFG" if section == LM_SEC_LIX else "Market"
@@ -1473,25 +2413,21 @@ async def lm_cleanup_loop():
 lix_group = app_commands.Group(name="lix", description="Lixing (LFG) listings")
 market_group = app_commands.Group(name="market", description="Market listings")
 
-# Autocomplete for topics (base helper; section-specific wrapper added in binder)
+# Autocomplete for topics (section-aware)
 async def lm_topic_autocomplete(inter: discord.Interaction, current: str, section: str):
-    topic_rows = await lm_get_topics(inter.guild.id, section)
+    topics = await lm_get_topics(inter.guild.id, section)
     current_l = (current or "").lower()
     opts = []
-    for key, emoji, _ in topic_rows:
+    for key, emoji, _ in topics:
         if not current or current_l in key.lower():
             label = f"{emoji} {key}" if emoji else key
             opts.append(app_commands.Choice(name=label[:100], value=key[:100]))
         if len(opts) >= 25: break
     return opts
 
-# ------- Common subcommands factory -------
+# ------- Common subcommands factory (with proper async autocomplete) -------
 def lm_bind_commands(section: str, group: app_commands.Group):
     sec = lm_norm_section(section)
-
-    # ✅ Autocomplete wrapper must be a coroutine function
-    async def _ac_topic(inter: discord.Interaction, current: str):
-        return await lm_topic_autocomplete(inter, current, sec)
 
     @group.command(name="set_channel", description=f"Set the {sec} post destination channel")
     @app_commands.describe(channel="Channel where posts & pings will go")
@@ -1544,15 +2480,19 @@ def lm_bind_commands(section: str, group: app_commands.Group):
         text = "\n".join([f"{e} **{k}**  · order {o}" for k, e, o in rows])
         await inter.response.send_message(text[:1900], ephemeral=True)
 
+    # Proper async autocomplete wrappers (fixes lambda/coroutine error)
+    async def _topic_autocomplete(inter: discord.Interaction, current: str):
+        return await lm_topic_autocomplete(inter, current, sec)
+
     @group.command(name="post", description=f"Create a {sec} post (6h cooldown per content)")
     @app_commands.describe(topic="Pick a topic", text="What you need / offer")
-    @app_commands.autocomplete(topic=_ac_topic)   # <-- fixed: coroutine wrapper
+    @app_commands.autocomplete(topic=_topic_autocomplete)
     async def post_cmd(inter: discord.Interaction, topic: str, text: str):
         await lm_post_listing(inter, sec, topic, text)
 
     @group.command(name="browse", description=f"Browse active {sec} posts")
     @app_commands.describe(topic="Filter by topic (optional)")
-    @app_commands.autocomplete(topic=_ac_topic)   # <-- fixed: coroutine wrapper
+    @app_commands.autocomplete(topic=_topic_autocomplete)
     async def browse_cmd(inter: discord.Interaction, topic: Optional[str] = None):
         embeds = await lm_browse_embed(inter.guild, sec, topic)
         await inter.response.send_message(embeds=embeds, ephemeral=True)
@@ -1581,8 +2521,8 @@ def lm_bind_commands(section: str, group: app_commands.Group):
             return await inter.response.send_message("I can't post in the configured channel.", ephemeral=True)
         role_id = await lm_get_section_role(gid, sec)
         mention = f"<@&{role_id}> " if role_id else ""
-        topic_rows = await lm_get_topics(gid, sec)
-        emoji = next((e for k, e, _ in topic_rows if k.lower() == topic_key.lower()), "🔔")
+        topics = await lm_get_topics(gid, sec)
+        emoji = next((e for k, e, _ in topics if k.lower() == topic_key.lower()), "🔔")
         title = "LFG" if sec == LM_SEC_LIX else "Market"
         embed = discord.Embed(title=f"{emoji} {title} — {topic_key}", description=text[:3900] + ("…" if len(text) > 3900 else ""),
                               color=0x4aa3ff if sec == LM_SEC_LIX else 0xf1c40f)
@@ -1620,7 +2560,7 @@ def lm_bind_commands(section: str, group: app_commands.Group):
                 pass
         await inter.response.send_message(f"✅ Closed #{id}.", ephemeral=True)
 
-# Bind commands for both sections
+# Bind commands for both sections (with fixed autocomplete)
 lm_bind_commands(LM_SEC_LIX, lix_group)
 lm_bind_commands(LM_SEC_MARKET, market_group)
 
@@ -1649,4 +2589,18 @@ async def _lm_on_ready():
         log.info("Lixing & Market add-on ready.")
     except Exception as e:
         log.warning(f"Lix/Market init failed: {e}")
-# ------------------ End Lixing & Market Add-on --------------------
+
+# ------------------ END Lixing & Market Add-on ------------------
+
+# -------- RUN --------
+async def main():
+    loop = asyncio.get_running_loop()
+    for s in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
+        if s:
+            try: loop.add_signal_handler(s, lambda sig=s: asyncio.create_task(graceful_shutdown(sig)))
+            except NotImplementedError: pass
+    try: await bot.start(TOKEN)
+    except KeyboardInterrupt: await graceful_shutdown()
+
+if __name__ == "__main__":
+    asyncio.run(main())
