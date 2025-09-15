@@ -3268,7 +3268,7 @@ async def _lm_on_ready():
         log.info("Lixing & Market (simplified) ready.")
     except Exception as e:
         log.warning(f"Lix/Market init failed: {e}")
-# ------------------ End Lixing & Market Add-on ------------------
+ ------------------ End Lixing & Market Add-on ------------------
 
 if __name__ == "__main__":
     asyncio.run(main())
