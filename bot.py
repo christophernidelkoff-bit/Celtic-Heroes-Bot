@@ -1087,39 +1087,28 @@ async def on_member_remove(member: discord.Member):
 
 # -------- BLACKLIST HELPERS & GLOBAL CHECK --------
 async def is_blacklisted(guild_id: int, user_id: int) -> bool:
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            c = await db.execute("SELECT 1 FROM blacklist WHERE guild_id=? AND user_id=?", (guild_id, user_id))
-            return (await c.fetchone()) is not None
-    except Exception as e:
-        log.warning(f"[blacklist] check failed g{guild_id}/u{user_id}: {e}")
-        return False
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT 1 FROM blacklist WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+        return (await c.fetchone()) is not None
 
 def blacklist_check():
     async def predicate(ctx: commands.Context) -> bool:
         if not ctx.guild:
             return True
         # auth-gate first
-        try:
-            if not await ensure_guild_auth(ctx.guild):
-                try:
-                    if can_send(ctx.channel):
-                        await ctx.send(":no_entry: Bot disabled in this server (authorization not satisfied).")
-                except Exception:
-                    pass
-                return False
-        except Exception:
+        if not await ensure_guild_auth(ctx.guild):
+            try:
+                if can_send(ctx.channel):
+                    await ctx.send(":no_entry: Bot disabled in this server (authorization not satisfied).")
+            except Exception:
+                pass
             return False
-        # blacklist
-        try:
-            if await is_blacklisted(ctx.guild.id, ctx.author.id):
-                try:
-                    if can_send(ctx.channel):
-                        await ctx.send(":no_entry: You are blacklisted from using this bot.")
-                except Exception:
-                    pass
-                return False
-        except Exception:
+        if await is_blacklisted(ctx.guild.id, ctx.author.id):
+            try:
+                if can_send(ctx.channel):
+                    await ctx.send(":no_entry: You are blacklisted from using this bot.")
+            except Exception:
+                pass
             return False
         return True
     return commands.check(predicate)
@@ -1130,18 +1119,12 @@ bot.add_check(blacklist_check())
 async def has_trusted(member: discord.Member, guild_id: int, boss_id: Optional[int] = None) -> bool:
     if member.guild_permissions.administrator:
         return True
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            if boss_id:
-                c = await db.execute(
-                    "SELECT trusted_role_id FROM bosses WHERE id=? AND guild_id=?",
-                    (boss_id, guild_id)
-                )
-                r = await c.fetchone()
-                if r and r[0]:
-                    return any(role.id == r[0] for role in member.roles)
-    except Exception as e:
-        log.warning(f"[perm] has_trusted failed g{guild_id}/b{boss_id}: {e}")
+    async with aiosqlite.connect(DB_PATH) as db:
+        if boss_id:
+            c = await db.execute("SELECT trusted_role_id FROM bosses WHERE id=? AND guild_id=?", (boss_id, guild_id))
+            r = await c.fetchone()
+            if r and r[0]:
+                return any(role.id == r[0] for role in member.roles)
     # fallback: Manage Messages counts as trusted
     return member.guild_permissions.manage_messages
 
@@ -1159,140 +1142,95 @@ async def timers_tick():
     except Exception:
         pass
 
-    # --- Pre-announces for future timers crossing pre_announce threshold ---
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            c = await db.execute(
-                "SELECT id,guild_id,channel_id,name,next_spawn_ts,pre_announce_min,category "
-                "FROM bosses WHERE next_spawn_ts > ?",
-                (now,)
-            )
-            future_rows = await c.fetchall()
-    except Exception as e:
-        log.warning(f"[tick] future_rows fetch failed: {e}")
-        future_rows = []
+    # Pre-announces for future timers crossing pre_announce threshold
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "SELECT id,guild_id,channel_id,name,next_spawn_ts,pre_announce_min,category "
+            "FROM bosses WHERE next_spawn_ts > ?",
+            (now,)
+        )
+        future_rows = await c.fetchall()
 
     for bid, gid, ch_id, name, next_ts, pre, cat in future_rows:
-        try:
-            pre_val = int(pre or 0)
-        except Exception:
-            pre_val = 0
-        if pre_val <= 0:
+        if not pre or pre <= 0:
             continue
-        try:
-            pre_ts = int(next_ts) - pre_val * 60
-        except Exception:
-            continue
-        if not (prev < pre_ts <= now):
-            continue
-
-        key = f"{gid}:{bid}:PRE:{next_ts}"
-        if key in bot._seen_keys:
-            continue
-        bot._seen_keys.add(key)
-
-        guild = bot.get_guild(gid)
-        try:
+        pre_ts = int(next_ts) - int(pre) * 60
+        if prev < pre_ts <= now:
+            key = f"{gid}:{bid}:PRE:{next_ts}"
+            if key in bot._seen_keys:
+                continue
+            bot._seen_keys.add(key)
+            guild = bot.get_guild(gid)
             if not guild or not await ensure_guild_auth(guild):
                 continue
-        except Exception:
-            continue
-
-        ch = await resolve_announce_channel(gid, ch_id, cat)
-        if ch and can_send(ch):
-            try:
+            ch = await resolve_announce_channel(gid, ch_id, cat)
+            if ch and can_send(ch):
                 left = max(0, int(next_ts) - now)
-                await ch.send(f"⏳ **{name}** — **Spawn Time**: `{fmt_delta_for_list(left)}` (almost up).")
-            except Exception as e:
-                log.warning(f"[tick] pre announce send failed g{gid}/b{bid}: {e}")
-        try:
+                try:
+                    await ch.send(f"⏳ **{name}** — **Spawn Time**: `{fmt_delta_for_list(left)}` (almost up).")
+                except Exception as e:
+                    log.warning(f"Pre announce failed: {e}")
             await send_subscription_ping(gid, bid, phase="pre", boss_name=name, when_left=max(0, int(next_ts) - now))
-        except Exception as e:
-            log.warning(f"[tick] pre sub ping failed g{gid}/b{bid}: {e}")
 
-    # --- Window opens (next_spawn_ts just crossed) ---
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            c = await db.execute(
-                "SELECT id,guild_id,channel_id,name,next_spawn_ts,category FROM bosses WHERE next_spawn_ts <= ?",
-                (now,)
-            )
-            due_rows = await c.fetchall()
-    except Exception as e:
-        log.warning(f"[tick] due_rows fetch failed: {e}")
-        due_rows = []
+    # Window opens (next_spawn_ts just crossed)
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "SELECT id,guild_id,channel_id,name,next_spawn_ts,category FROM bosses WHERE next_spawn_ts <= ?",
+            (now,)
+        )
+        due_rows = await c.fetchall()
 
     for bid, gid, ch_id, name, next_ts, cat in due_rows:
-        # skip items not crossing in this interval (prevents spam at boot or old timers)
-        try:
-            if not (prev < int(next_ts) <= now):
-                continue
-        except Exception:
+        # mute noisy spam that was already due before boot to avoid duplicate messages
+        if not (prev < int(next_ts) <= now):
             continue
-
         key = f"{gid}:{bid}:WINDOW:{next_ts}"
         if key in bot._seen_keys:
             continue
         bot._seen_keys.add(key)
-
         guild = bot.get_guild(gid)
-        try:
-            if not guild or not await ensure_guild_auth(guild):
-                continue
-        except Exception:
+        if not guild or not await ensure_guild_auth(guild):
             continue
-
         ch = await resolve_announce_channel(gid, ch_id, cat)
         if ch and can_send(ch):
             try:
                 await ch.send(f"🕑 **{name}** — **Spawn Window has opened!**")
             except Exception as e:
-                log.warning(f"[tick] window announce send failed g{gid}/b{bid}: {e}")
-        try:
-            await send_subscription_ping(gid, bid, phase="window", boss_name=name)
-        except Exception as e:
-            log.warning(f"[tick] window sub ping failed g{gid}/b{bid}: {e}")
+                log.warning(f"Window announce failed: {e}")
+        await send_subscription_ping(gid, bid, phase="window", boss_name=name)
 
 @tasks.loop(minutes=1.0)
 async def uptime_heartbeat():
     """Keeps a lightweight heartbeat in a configurable channel; emits only on the minute cadence."""
     now_m = now_ts() // 60
     for g in bot.guilds:
-        try:
-            # skip unauthorized guilds
-            if not await ensure_guild_auth(g):
-                continue
-            await upsert_guild_defaults(g.id)
-            async with aiosqlite.connect(DB_PATH) as db:
-                c = await db.execute(
-                    "SELECT COALESCE(uptime_minutes, ?) FROM guild_config WHERE guild_id=?",
-                    (DEFAULT_UPTIME_MINUTES, g.id)
-                )
-                r = await c.fetchone()
-            minutes = int(r[0]) if r else DEFAULT_UPTIME_MINUTES
-            if minutes <= 0 or now_m % minutes != 0:
-                continue
-            ch = await resolve_heartbeat_channel(g.id)
-            if ch and can_send(ch):
-                try:
-                    await ch.send("✅ Bot is online — timers active.")
-                except Exception as e:
-                    log.warning(f"[heartbeat] send failed g{g.id}: {e}")
-        except Exception as e:
-            log.warning(f"[heartbeat] loop error g{getattr(g, 'id', '?')}: {e}")
+        # skip unauthorized guilds
+        if not await ensure_guild_auth(g):
+            continue
+        await upsert_guild_defaults(g.id)
+        async with aiosqlite.connect(DB_PATH) as db:
+            c = await db.execute("SELECT COALESCE(uptime_minutes, ?) FROM guild_config WHERE guild_id=?", (DEFAULT_UPTIME_MINUTES, g.id))
+            r = await c.fetchone()
+        minutes = int(r[0]) if r else DEFAULT_UPTIME_MINUTES
+        if minutes <= 0 or now_m % minutes != 0:
+            continue
+        ch = await resolve_heartbeat_channel(g.id)
+        if ch and can_send(ch):
+            try:
+                await ch.send("✅ Bot is online — timers active.")
+            except Exception as e:
+                log.warning(f"Heartbeat failed: {e}")
 
 # -------- QUICK RESET VIA PLAIN MESSAGE (prefix+alias shorthand) --------
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
-    # auth & blacklist gates
-    try:
-        if not await ensure_guild_auth(message.guild):
-            return
-        if await is_blacklisted(message.guild.id, message.author.id):
-            return
-    except Exception:
+    # auth gate
+    if not await ensure_guild_auth(message.guild):
+        return
+    # blacklist gate
+    if await is_blacklisted(message.guild.id, message.author.id):
         return
 
     prefix = await get_guild_prefix(bot, message)
@@ -1303,44 +1241,22 @@ async def on_message(message: discord.Message):
         # If it isn't a reserved command root, treat it as a boss identifier to quick reset
         if root not in RESERVED_TRIGGERS:
             ident = shorthand.strip().strip('"').strip("'")
-            try:
-                result, err = await resolve_boss(message, ident)
-            except Exception:
-                result, err = (None, "Lookup failed.")
+            result, err = await resolve_boss(message, ident)
             if result and not err:
                 bid, nm, mins = result
-                try:
-                    if await has_trusted(message.author, message.guild.id, bid):
-                        async with aiosqlite.connect(DB_PATH) as db:
-                            await db.execute(
-                                "UPDATE bosses SET next_spawn_ts=? WHERE id=?",
-                                (now_ts() + int(mins) * 60, bid)
-                            )
-                            await db.commit()
-                        if can_send(message.channel):
-                            try:
-                                await message.channel.send(
-                                    f":crossed_swords: **{nm}** killed. Next **Spawn Time** in `{mins}m`."
-                                )
-                            except Exception:
-                                pass
-                        # refresh panels so the order/times reflect the new state
-                        try:
-                            await refresh_subscription_messages(message.guild)
-                        except Exception:
-                            pass
-                        return
-                    else:
-                        if can_send(message.channel):
-                            try:
-                                await message.channel.send(":no_entry: You lack permission to reset this boss.")
-                            except Exception:
-                                pass
-                        return
-                except Exception:
-                    # fall through to process commands
-                    pass
-            # else: let it fall through to normal commands
+                if await has_trusted(message.author, message.guild.id, bid):
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        await db.execute("UPDATE bosses SET next_spawn_ts=? WHERE id=?", (now_ts() + int(mins) * 60, bid))
+                        await db.commit()
+                    if can_send(message.channel):
+                        await message.channel.send(f":crossed_swords: **{nm}** killed. Next **Spawn Time** in `{mins}m`.")
+                    # refreshing panels is nice here so the order/times reflect the new state
+                    await refresh_subscription_messages(message.guild)
+                    return
+                else:
+                    if can_send(message.channel):
+                        await message.channel.send(":no_entry: You lack permission to reset this boss.")
+                    return
     await bot.process_commands(message)
 
 # -------- REACTIONS: subscription toggles & reaction-roles --------
@@ -1350,52 +1266,34 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if bot.user and payload.user_id == bot.user.id:
         return
     guild = bot.get_guild(payload.guild_id)
-    try:
-        if not guild or not await ensure_guild_auth(guild):
-            return
-    except Exception:
+    if not guild or not await ensure_guild_auth(guild):
         return
     emoji_str = str(payload.emoji)
 
     # Subscription panels: toggle membership on react
-    try:
-        panels = await get_all_panel_records(guild.id)
-    except Exception:
-        panels = {}
+    panels = await get_all_panel_records(guild.id)
     if payload.message_id in [mid for (mid, _chid) in panels.values()]:
-        try:
-            async with aiosqlite.connect(DB_PATH) as db:
-                c = await db.execute(
-                    "SELECT boss_id FROM subscription_emojis WHERE guild_id=? AND emoji=?",
-                    (guild.id, emoji_str)
+        async with aiosqlite.connect(DB_PATH) as db:
+            c = await db.execute("SELECT boss_id FROM subscription_emojis WHERE guild_id=? AND emoji=?", (guild.id, emoji_str))
+            r = await c.fetchone()
+            if r:
+                boss_id = r[0]
+                await db.execute(
+                    "INSERT OR IGNORE INTO subscription_members (guild_id,boss_id,user_id) VALUES (?,?,?)",
+                    (guild.id, boss_id, payload.user_id)
                 )
-                r = await c.fetchone()
-                if r:
-                    boss_id = int(r[0])
-                    await db.execute(
-                        "INSERT OR IGNORE INTO subscription_members (guild_id,boss_id,user_id) VALUES (?,?,?)",
-                        (guild.id, boss_id, payload.user_id)
-                    )
-                    await db.commit()
-        except Exception as e:
-            log.warning(f"[react-add] sub toggle failed g{guild.id}: {e}")
+                await db.commit()
         return
 
     # Reaction role panels
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            c = await db.execute("SELECT 1 FROM rr_panels WHERE message_id=?", (payload.message_id,))
-            panel_present = (await c.fetchone()) is not None
-    except Exception:
-        panel_present = False
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT 1 FROM rr_panels WHERE message_id=?", (payload.message_id,))
+        panel_present = (await c.fetchone()) is not None
     if panel_present:
         try:
             member = guild.get_member(payload.user_id) or await guild.fetch_member(payload.user_id)
             async with aiosqlite.connect(DB_PATH) as db:
-                c = await db.execute(
-                    "SELECT role_id FROM rr_map WHERE panel_message_id=? AND emoji=?",
-                    (payload.message_id, emoji_str)
-                )
+                c = await db.execute("SELECT role_id FROM rr_map WHERE panel_message_id=? AND emoji=?", (payload.message_id, emoji_str))
                 row = await c.fetchone()
             if not row:
                 return
@@ -1403,65 +1301,157 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             if role:
                 await member.add_roles(role, reason="Reaction role opt-in")
         except Exception as e:
-            log.warning(f"[react-add] rr add failed g{guild.id}: {e}")
+            log.warning(f"Add reaction-role failed: {e}")
 
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
     guild = bot.get_guild(payload.guild_id)
-    try:
-        if not guild or not await ensure_guild_auth(guild):
-            return
-    except Exception:
+    if not guild or not await ensure_guild_auth(guild):
         return
     emoji_str = str(payload.emoji)
 
     # Subscription panels
-    try:
-        panels = await get_all_panel_records(guild.id)
-    except Exception:
-        panels = {}
+    panels = await get_all_panel_records(guild.id)
     if payload.message_id in [mid for (mid, _chid) in panels.values()]:
-        try:
-            async with aiosqlite.connect(DB_PATH) as db:
-                c = await db.execute(
-                    "SELECT boss_id FROM subscription_emojis WHERE guild_id=? AND emoji=?",
-                    (guild.id, emoji_str)
+        async with aiosqlite.connect(DB_PATH) as db:
+            c = await db.execute("SELECT boss_id FROM subscription_emojis WHERE guild_id=? AND emoji=?", (guild.id, emoji_str))
+            r = await c.fetchone()
+            if r:
+                boss_id = r[0]
+                await db.execute(
+                    "DELETE FROM subscription_members WHERE guild_id=? AND boss_id=? AND user_id=?",
+                    (guild.id, boss_id, payload.user_id)
                 )
-                r = await c.fetchone()
-                if r:
-                    boss_id = int(r[0])
-                    await db.execute(
-                        "DELETE FROM subscription_members WHERE guild_id=? AND boss_id=? AND user_id=?",
-                        (guild.id, boss_id, payload.user_id)
-                    )
-                    await db.commit()
-        except Exception as e:
-            log.warning(f"[react-rem] sub toggle failed g{guild.id}: {e}")
+                await db.commit()
         return
 
     # Reaction role panels
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            c = await db.execute("SELECT 1 FROM rr_panels WHERE message_id=?", (payload.message_id,))
-            panel_present = (await c.fetchone()) is not None
-    except Exception:
-        panel_present = False
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT 1 FROM rr_panels WHERE message_id=?", (payload.message_id,))
+        panel_present = (await c.fetchone()) is not None
     if panel_present:
         try:
             member = guild.get_member(payload.user_id) or await guild.fetch_member(payload.user_id)
             async with aiosqlite.connect(DB_PATH) as db:
-                c = await db.execute(
-                    "SELECT role_id FROM rr_map WHERE panel_message_id=? AND emoji=?",
-                    (payload.message_id, emoji_str)
-                )
-                row = await c.fetchone()
+                c = await db.execute("SELECT role_id FROM rr_map WHERE panel_message_id=? AND emoji=?", (payload.message_id, emoji_str))
+                row = await db.fetchone()
             if not row:
                 return
             role = guild.get_role(int(row[0]))
             if role:
                 await member.remove_roles(role, reason="Reaction role opt-out")
         except Exception as e:
-            log.warning(f"[react-rem] rr remove failed g{guild.id}: {e}")
+            log.warning(f"Remove reaction-role failed: {e}")
+
+# -------- /timers UI helpers (MUST exist before /timers runs) --------
+class TimerToggleView(discord.ui.View):
+    def __init__(self, guild: discord.Guild, user_id: int, init_show: List[str]):
+        super().__init__(timeout=300)
+        self.guild = guild
+        self.user_id = user_id
+        self.shown = [c for c in CATEGORY_ORDER if c in init_show] or CATEGORY_ORDER[:]  # default to all
+        for idx, cat in enumerate(CATEGORY_ORDER):
+            self.add_item(self._make_toggle_button(cat, idx))
+        self.add_item(self._make_all_button())
+        self.add_item(self._make_none_button())
+        self.message = None
+
+    def _make_toggle_button(self, cat: str, idx: int):
+        return ToggleButton(label=cat, style=discord.ButtonStyle.primary, cat=cat, row=min(4, idx // 3))
+
+    def _make_all_button(self):
+        return ControlButton(label="Show All", style=discord.ButtonStyle.success, action="all", row=4)
+
+    def _make_none_button(self):
+        return ControlButton(label="Hide All", style=discord.ButtonStyle.danger, action="none", row=4)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This panel isn't yours — run `/timers` to get your own.", ephemeral=True)
+            return False
+        return True
+
+    async def persist(self):
+        await set_user_shown_categories(self.guild.id, self.user_id, self.shown)
+
+    async def refresh(self, interaction: discord.Interaction):
+        embeds = await build_timer_embeds_for_categories(self.guild, self.shown)
+        content = f"**Categories shown:** {', '.join(self.shown) if self.shown else '(none)'}"
+        await self.persist()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=content, embeds=embeds, view=self)
+        else:
+            await interaction.response.edit_message(content=content, embeds=embeds, view=self)
+
+class ToggleButton(discord.ui.Button):
+    def __init__(self, label: str, style: discord.ButtonStyle, cat: str, row: int):
+        super().__init__(label=label, style=style, row=row)
+        self.cat = cat
+
+    async def callback(self, interaction: discord.Interaction):
+        view: TimerToggleView = self.view  # type: ignore
+        if self.cat in view.shown:
+            view.shown.remove(self.cat)
+        else:
+            ordered = [c for c in CATEGORY_ORDER if c in (view.shown + [self.cat])]
+            view.shown = ordered
+        await view.refresh(interaction)
+
+class ControlButton(discord.ui.Button):
+    def __init__(self, label: str, style: discord.ButtonStyle, action: str, row: int):
+        super().__init__(label=label, style=style, row=row)
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        view: TimerToggleView = self.view  # type: ignore
+        if self.action == "all":
+            view.shown = [c for c in CATEGORY_ORDER]
+        else:
+            view.shown = []
+        await view.refresh(interaction)
+
+async def build_timer_embeds_for_categories(guild: discord.Guild, categories: List[str]) -> List[discord.Embed]:
+    gid = guild.id
+    show_eta = await get_show_eta(gid)
+    if not categories:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        q_marks = ",".join("?" for _ in categories)
+        c = await db.execute(f"SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=? AND category IN ({q_marks})",
+                             (gid, *[norm_cat(c) for c in categories]))
+        rows = await c.fetchall()
+    now = now_ts()
+    grouped: Dict[str, List[tuple]] = {k: [] for k in categories}
+    for name, ts, cat, sk, win in rows:
+        nc = norm_cat(cat)
+        if nc in grouped:
+            grouped[nc].append((sk or "", name, int(ts), int(win)))
+    embeds: List[discord.Embed] = []
+    for cat in categories:
+        items = grouped.get(cat, [])
+        items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
+        normal: List[tuple] = []; nada_list: List[tuple] = []
+        for sk, nm, tts, win in items:
+            delta = tts - now; t = fmt_delta_for_list(delta)
+            (nada_list if t == "-Nada" else normal).append((sk, nm, t, tts, win))
+        blocks: List[str] = []
+        for sk, nm, t, ts, win_m in normal:
+            win_status = window_label(now, ts, win_m)
+            line1 = f"〔 **{nm}** • Spawn: `{t}` • Window: `{win_status}` 〕"
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
+            blocks.append(line1 + (eta_line if eta_line else ""))
+        if nada_list:
+            blocks.append("*Lost (-Nada):*")
+            for sk, nm, t, ts, win_m in nada_list:
+                blocks.append(f"• **{nm}** — `{t}`")
+        description = "\n\n".join(blocks) if blocks else "No timers."
+        em = discord.Embed(
+            title=f"{category_emoji(cat)} {cat}",
+            description=description,
+            color=await get_category_color(gid, cat)
+        )
+        embeds.append(em)
+    return embeds[:10]
 # -------------------- Part 4/4 — commands, slash, errors, shutdown, run --------------------
 
 # -------- HELP (tidy, no auth-config details) --------
