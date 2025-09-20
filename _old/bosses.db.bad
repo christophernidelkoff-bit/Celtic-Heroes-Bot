@@ -1,0 +1,1683 @@
+SQLite format 3   @    T   #                                                           T .ä   ˚    ˚
+\
+3
+,	Ì›ñ u ,`'>˚÷Á†c œ œ                                                     AU/ indexsqlite_autoindex_reaction_role_map_1reaction_role_map       G[5 indexsqlite_autoindex_reaction_role_panels_1reaction_role_panelsÇ: 55Ñtablereaction_role_panelsreaction_role_panelsCREATE TABLE reaction_role_panels (
+        guild_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        title TEXT DEFAULT '',
+        description TEXT DEFAULT '',
+        PRIMARY KEY (guild_id, message_id)
+    )EY3 indexsqlite_autoindex_subscription_panels_1subscription_panelsÅl 33Çtablesubscription_panelssubscription_panelsCREATE TABLE subscription_panels (
+        guild_id INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, category)
+    )?S- indexsqlite_autoindex_user_timer_prefs_1user_timer_prefsÅa --Çutableuser_timer_prefsuser_timer_prefsCREATE TABLE user_timer_prefs (
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        categories TEXT NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+    )AU/ indexsqlite_autoindex_category_channels_1category_channelsÅf //Ç{tablecategory_channelscategory_channelsCREATE TABLE category_channels (
+        guild_id INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        channel_id INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, category)
+    )7
+K% indexsqlite_autoindex_boss_aliases_1boss_aliasesÅI %%ÇUtableboss_aliasesboss_aliases
+CREATE TABLE boss_aliases (
+        guild_id INTEGER NOT NULL,
+        boss_id INTEGER NOT NULL,
+        alias TEXT NOT NULL,
+        UNIQUE (guild_id, alias)
+    )G
+[5 indexsqlite_autoindex_subscription_members_1subscription_membersÇ
+ 55É_tablesubscription_memberssubscription_members
+CREATE TABLE subscription_members (
+                guild_id INTEGER NOT NULL,
+                boss_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, boss_id, user_id)
+            )E	Y3 indexsqlite_autoindex_subscription_emojis_1subscription_emojis
+Ç
+ 33ÉAtablesubscription_emojissubscription_emojis	CREATE TABLE subscription_emojis (
+                guild_id INTEGER NOT NULL,
+                boss_id INTEGER NOT NULL,
+                emoji TEXT NOT NULL,
+                PRIMARY KEY (guild_id, boss_id)
+            )= Q+ indexsqlite_autoindex_category_colors_1category_colorsÇ ++É?tablecategory_colorscategory_colors CREATE TABLE category_colors (
+                guild_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                color_hex TEXT NOT NULL,
+                PRIMARY KEY (guild_id, category)
+            )'; indexsqlite_autoindex_meta_1metaw ÅQtablemetametaCREATE TABLE meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )É %%ÖEtableguild_configguild_configCREATE TABLE guild_config (
+                guild_id INTEGER PRIMARY KEY,
+                default_channel INTEGER DEFAULT NULL
+            , prefix TEXT DEFAULT NULL, sub_channel_id INTEGER DEFAULT NULL, sub_message_id INTEGER DEFAULT NULL, uptime_minutes INTEGER DEFAULT NULL, heartbeat_channel_id INTEGER DEFAULT NULL, show_eta INTEGER DEFAULT 0)P++Ytablesqlite_sequencesqlite_sequenceCREATE TABLE sqlite_sequence(name,seq)ÑR àtablebossesbossesCREATE TABLE bosses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER,
+                name TEXT NOT NULL,
+                spawn_minutes INTEGER NOT NULL,
+                next_spawn_ts INTEGER NOT NULL,
+                pre_announce_min INTEGER DEFAULT 3,
+                trusted_role_id INTEGER DEFAULT NULL,
+                created_by INTEGER,
+                notes TEXT DEFAULT ''
+            , category TEXT DEFAULT NULL, sort_key TEXT DEFAULT '', window_minutes INTEGER DEFAU   
+   ˚    ˚?ﬁ≠K†
+·
+´
+s
+=
+Œòd4 
+Œ
+ö
+i
+7
+
+
+ﬂ
+≥
+á
+Z
+-
+ 	”	¶	y	K	‹•o5 ˘ ø é [ )ÙπÄH”úf.¯¿âSÔªâU$Ú∆önAÁ∫çV Á ±               4W   
+
+§´˛◊¿xEast Ring ◊h√©ï
+£RÅhÑ Rings25V  ! 
+
+§´˛◊¿xSouth Ring ◊h√©ï
+£RÅhÑ Rings26U  # 
+
+§´˛◊¿xCenter Ring ◊h√©ï
+£RÅhÑ Rings25T  ! 
+
+§´˛◊¿xNorth Ring ◊h√©ï
+£RÅhÑ Rings2+S   
+
+§´˛◊¿x205uh√íù
+£RÅhÑ EDL+R   
+
+§´˛◊¿x200lh√êÅ
+£RÅhÑ EDL+Q   
+
+§´˛◊¿x195Yh√å
+£RÅhÑ EDL+P   
+
+§´˛◊¿x190Qh√ä-
+£RÅhÑ EDL+O   
+
+§´˛◊¿x185Hh√à
+£RÅhÑ EDL*N   
+
+§´˛◊¿x165Ih√àM
+£RÅhÑ DL*M   
+
+§´˛◊¿x160Dh√á!
+£RÅhÑ DL*L   
+
+§´˛◊¿x155?h√Öı
+£RÅhÑ DL0K   
+
+§´˛◊¿xPyrus:h√Ñ…
+£RÅhÑ Frozen/J   
+
+§´˛◊¿xGrom0h√Çq
+£RÅhÑ Frozen2I   
+
+§´˛◊¿xChained+h√ÅE
+£RÅhÑ Frozen0H   
+
+§´˛◊¿xWoody&h√Ä
+£RÅhÑ Frozen2G   
+
+§´˛◊¿xSwampie!h√~Ì
+£RÅhÑ Frozen.F   
+
+§´˛◊¿xEyeh√}¡
+£RÅhÑ Frozen2E   
+
+§´˛◊¿xRedbaneh√{·
+£RÅhÑ Frozen4D   
+
+§´˛◊¿xFalgren-h√ÅΩ
+£RÅhÑ Meteoric5C   
+
+§´˛◊¿xGoretuskh√{·
+£RÅhÑ Meteoric6B   
+
+§´˛◊¿xCoppingerh√{·
+£RÅhÑ Meteoric4A   
+
+§´˛◊¿xRedbaneh√{·
+£RÅhÑ Meteoric6@   
+
+§´˛◊¿xRockbellyh√zµ
+£RÅhÑ Meteoric4?   
+
+§´˛◊¿xBonehadh√zµ
+£RÅhÑ Meteoric5>   
+
+§´˛◊¿xDoomclaw h√x’
+£RÅhÑ Meteoric7=   
+
+õ¬ß
+Ä *Hrungnir(hƒ¨É
+∫õr qMidraids¿:<  # 
+
+õ¬ß
+Ä *Necromancer(hƒ¨É
+∫õr qMidraids¿6;   
+
+õ¬ß
+Ä *Mordris∞hƒêc
+∫õr qMidraids¿7:   
+
+õ¬ß
+Ä *Aggorath∞hƒêc
+∫õr qMidraids¿99  - 
+
+õ¬ß
+Ä *Crom‚Äôs ManikinÄh»Ω#
+∫õr qEG†38  ! 
+
+õ¬ß
+Ä *Bloodthorn ¯h≈UC
+∫õr qEGê07   
+
+õ¬ß
+Ä *Dhiothu ¯h≈UC
+∫õr qEGê16   
+
+õ¬ß
+Ä *Gelebron Äh≈9#
+∫õr qEGê/5   
+
+õ¬ß
+Ä *Proteus8hƒtC
+∫õr qEG84  + 
+
+õ¬ß
+Ä *Thymea Banebark h√Øc
+∫õr qEGH:3  / 
+
+õ¬ß
+Ä *Sciathan Leathair h√Øc
+∫õr qEG,82  + 
+
+õ¬ß
+Ä *Draig Liathphur h√Øc
+∫õr qEGH41   
+
+õ¬ß
+Ä *East Ring ◊h√©á
+∫õr qRings250  ! 
+
+õ¬ß
+Ä *South Ring ◊h√©á
+∫õr qRings26/  # 
+
+õ¬ß
+Ä *Center Ring ◊h√©á
+∫õr qRings25.  ! 
+
+õ¬ß
+Ä *North Ring ◊h√©á
+∫õr qRings2,-   
+
+õ¬ß
+Ä *215 Üh√ñã
+∫õr qEDL+,   
+
+õ¬ß
+Ä *210}h√îo
+∫õr qEDL++   
+
+õ¬ß
+Ä *205uh√íè
+∫õr qEDL+*   
+
+õ¬ß
+Ä *200lh√ês
+∫õr qEDL+)   
+
+õ¬ß
+Ä *195Yh√ãˇ
+∫õr qEDL+(   
+
+õ¬ß
+Ä *190Qh√ä
+∫õr qEDL+'   
+
+õ¬ß
+Ä *185Hh√à
+∫õr qEDL*&   
+
+õ¬ß
+Ä *170Nh√âk
+∫õr qDL*%   
+
+õ¬ß
+Ä *165Ih√à?
+∫õr qDL*$   
+
+õ¬ß
+Ä *160Dh√á
+∫õr qDL*#   
+
+õ¬ß
+Ä *155?h√ÖÁ
+∫õr qDL0"   
+
+õ¬ß
+Ä *Pyrus:h√Ñª
+∫õr qFrozen/!   
+
+õ¬ß
+Ä *Grom0h√Çc
+∫õr qFrozen2    
+
+õ¬ß
+Ä *Chained+h√Å7
+∫õr qFrozen0   
+
+õ¬ß
+Ä *Woody&h√Ä
+
+∫õr qFrozen2   
+
+õ¬ß
+Ä *Swampie!h√~ﬂ
+∫õr qFrozen.   
+
+õ¬ß
+Ä *Eyeh√}≥
+∫õr qFrozen2   
+
+õ¬ß
+Ä *Redbaneh√{”
+∫õr qFrozen4   
+
+õ¬ß
+Ä *Falgren-h√ÅØ
+∫õr qMeteoric5   
+
+õ¬ß
+Ä *Goretuskh√{”
+∫õr qMeteoric6   
+
+õ¬ß
+Ä *Coppingerh√{”
+∫õr qMeteoric4   
+
+õ¬ß
+Ä *Redbaneh√{”
+∫õr qMeteoric6   
+
+õ¬ß
+Ä *Rockbellyh√zß
+∫õr qMeteoric4   
+
+õ¬ß
+Ä *Bonehadh√zß
+∫õr qMeteoric5   
+
+õ¬ß
+Ä *Doomclaw h√x«
+∫õr qMeteoric1 	 
+
+õ¬ß
+Ä *¶ºœ180h√`Z
+£RÅhÑ DL/
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ôDinoh¬m£RÅhÑ EG/
+  
+
+§´˛◊¿x§´ˇ4Ä ô170h¬mX£RÅhÑ DL/
+
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ô210h¬m£RÅhÑ EDL/
+
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ô215h¬m£RÅhÑ EDL.	
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ô182h¬l˝£RÅhÑ DL.
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ô169h¬m£RÅhÑ DL/ 
+  
+
+§´˛◊¿x§´ˇ4Ä ô181h¬mX£RÅhÑ DL-
+
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ôBTh¬m#£RÅhÑ EG/
+  
+
+§´˛◊¿x§´ˇ4Ä ô180h√£RÅh   8
+   Ù Ù                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
+bossesh
+ﬁ ñ ñ                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           *âÊ¯™∏™ÄÄ*
+   	ßÑùä¿ 2¶[ùD Ñ¶8É¿ ñßÄıF r
+âÈïøˆﬂÄêx     !<   "™∏™ÄÄ*    §©∑6Ä –¶≠@ z
+   
+
+ ‰∆åR7¯πg
+⁄
+ü
+X
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               E
+Å seed:v2025-09-12-subping-window-ps-final:g1415445293930909816doneEÅ seed:v2025-09-12-subping-window-ps-final:g1412936930802270250done9
+qseed:v2025-09-12-sub-move-fix:g1415445293930909816done9
+qseed:v2025-09-12-sub-move-fix:g1412936930802270250doneP	Åseed:v2025-09-11-rings-seed2-nada-splitpanels-rr-bl:g1415445293930909816donePÅseed:v2025-09-11-rings-seed2-nada-splitpanels-rr-bl:g1412936930802270250done= yseed:v2025-09-11-rings-seed2-nada:g1415445293930909816done=yseed:v2025-09-11-rings-seed2-nada:g1412936930802270250done%!last_tick_ts17577309218oseed:v2025-09-11-rings-seed1:g1415445293930909816done8oseed:v2025-09-11-rings-seed1:g1412936930802270250done+!last_startup_ts1757729729'!offline_since1757730925
+   
+
+X €^Ô•oöL#Ë
+ﬁ
+õ
+X                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      BÅ seed:v2025-09-12-subping-window-ps-final:g1415445293930909816
+BÅ seed:v2025-09-12-subping-window-ps-final:g14129369308022702506qseed:v2025-09-12-sub-move-fix:g1415445293930909816
+6qseed:v2025-09-12-sub-move-fix:g1412936930802270250
+MÅseed:v2025-09-11-rings-seed2-nada-splitpanels-rr-bl:g1415445293930909816	MÅseed:v2025-09-11-rings-seed2-nada-splitpanels-rr-bl:g1412936930802270250:yseed:v2025-09-11-rings-seed2-nada:g1415445293930909816 :yseed:v2025-09-11-rings-seed2-nada:g1412936930802270250%last_tick_ts5oseed:v2025-09-11-rings-seed1:g14154452939309098165oseed:v2025-09-11-rings-seed1:g1412936930802270250+last_startup_ts'	offline_since
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+   *÷ ⁄«¥°é|jWD1
+¯Â”¡ÆúäxeP:$
+˛
+Î
+ÿ
+≈
+≤
+ü
+å
+y
+f
+Q
+>
++
+
+Ï÷Ì√                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     ,õ¬ß
+Ä *hü™Ω*õ¬ß
+Ä *4üå©Ô∏è)õ¬ß
+Ä *3üå´Ô∏è(õ¬ß
+Ä *5üåä'õ¬ß
+Ä *6üå™Ô∏è&õ¬ß
+Ä *2üåã%õ¬ß
+Ä *7üßä$õ¬ß
+Ä *9‚òÑÔ∏è#õ¬ß
+Ä *8üî±"õ¬ß
+Ä *0üê≤!õ¬ß
+Ä *.üêâ õ¬ß
+Ä *1ü™ôõ¬ß
+Ä */üéØõ¬ß
+Ä *<üëëõ¬ß
+Ä *;üßøõ¬ß
+Ä *=üß™õ¬ß
+Ä *:üóøõ¬ß
+Ä *-üèπõ¬ß
+Ä *,üõ°Ô∏èõ¬ß
+Ä *+üó°Ô∏èõ¬ß
+Ä **‚öîÔ∏èõ¬ß
+Ä *)üî•õ¬ß
+Ä *(‚ö°õ¬ß
+Ä *'‚ú®õ¬ß
+Ä *&‚≠êõ¬ß
+Ä *%üü§õ¬ß
+Ä *$‚ö™õ¬ß
+Ä *#‚ö´õ¬ß
+Ä *üü£õ¬ß
+Ä *üîµ
+õ¬ß
+Ä *üü¢õ¬ß
+Ä *"üü°
+õ¬ß
+Ä *!üü†
+õ¬ß
+Ä *üî¥	õ¬ß
+Ä * üü´õ¬ß
+Ä *‚¨ú õ¬ß
+Ä *‚¨õõ¬ß
+Ä *üü™õ¬ß
+Ä *üü¶õ¬ß
+Ä *üü©õ¬ß
+Ä *üü®õ¬ß
+Ä *üüß+õ¬ß
+Ä *güü•
+Ú *
+| ≈„âò‘ß∂>k/ z\MÛ‰’∆∑®ôä{0!
+«
+ö
+ã
+©
+∏
+÷
+Ù
+ÂlN?]
+|
+m                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               õ¬ß
+Ä *h,õ¬ß
+Ä *g+õ¬ß
+Ä *4*õ¬ß
+Ä *3)õ¬ß
+Ä *5(õ¬ß
+Ä *6'õ¬ß
+Ä *2&õ¬ß
+Ä *7%õ¬ß
+Ä *9$õ¬ß
+Ä *8#õ¬ß
+Ä *0"õ¬ß
+Ä *.!õ¬ß
+Ä *1 õ¬ß
+Ä */õ¬ß
+Ä *<õ¬ß
+Ä *;õ¬ß
+Ä *=õ¬ß
+Ä *:õ¬ß
+Ä *-õ¬ß
+Ä *,õ¬ß
+Ä *+õ¬ß
+Ä **õ¬ß
+Ä *)õ¬ß
+Ä *(õ¬ß
+Ä *'õ¬ß
+Ä *&õ¬ß
+Ä *%õ¬ß
+Ä *$õ¬ß
+Ä *#õ¬ß
+Ä *õ¬ß
+Ä *õ¬ß
+Ä *
+õ¬ß
+Ä *"õ¬ß
+Ä *!
+õ¬ß
+Ä *
+õ¬ß
+Ä * 	õ¬ß
+Ä *õ¬ß
+Ä * õ¬ß
+Ä *õ¬ß
+Ä *õ¬ß
+Ä *õ¬ß
+Ä *õ¬ß
+Ä *   	õ¬ß
+Ä *
+ ” y© ª§çv_H1Ï’æßêybK4
+Ô
+ÿ
+¡
+™
+ì
+|
+e
+N
+ 
+	Ú€ƒ≠ñhQ:
+ı
+ﬁ
+«
+∞
+Ç
+ô
+k
+T
+=
+&
+
+¯
+·
+ 
+≥
+ú
+n
+W
+@
+)
+	˚	‰	Õ	∂	ü	à	q	Z	C	,	˛Á–π¢ãt]F/#È º
+7 • é w ` I 2  Ì÷ø®ëzcL5 Ÿ¬´î}fO8!	ÒŸ¡© ˇyyyyyy                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   Åõ¬ß
+Ä *$∫õr q õ¬ß
+Ä *-∫õr qÅõ¬ß
+Ä *
+∂Ñ@Åõ¬ß
+Ä *g8ó≥DÅõ¬ß
+Ä *&8ó≥DÅõ¬ß
+Ä *%8ó≥DÅ õ¬ß
+Ä *$8ó≥Dõ¬ß
+Ä *#8ó≥D~õ¬ß
+Ä *-8ó≥D}õ¬ß
+Ä *,8ó≥D|õ¬ß
+Ä *+8ó≥D{õ¬ß
+Ä **8ó≥Dzõ¬ß
+Ä *)8ó≥Dyõ¬ß
+Ä *(8ó≥Dxõ¬ß
+Ä *'8ó≥Dwõ¬ß
+Ä *<8ó≥Dvõ¬ß
+Ä *;8ó≥Duõ¬ß
+Ä *=8ó≥Dtõ¬ß
+Ä *:8ó≥Dsõ¬ß
+Ä *58ó≥Drõ¬ß
+Ä *48ó≥Dqõ¬ß
+Ä *38ó≥Dpõ¬ß
+Ä *68ó≥Doõ¬ß
+Ä *28ó≥Dnõ¬ß
+Ä *78ó≥Dmõ¬ß
+Ä *98ó≥Dlõ¬ß
+Ä *88ó≥Dkõ¬ß
+Ä *8ó≥Djõ¬ß
+Ä *8ó≥Diõ¬ß
+Ä *+
+∂Ñ@hõ¬ß
+Ä **
+∂Ñ@gõ¬ß
+Ä *)
+∂Ñ@fõ¬ß
+Ä *(
+∂Ñ@eõ¬ß
+Ä *-
+∂Ñ@dõ¬ß
+Ä *,
+∂Ñ@cõ¬ß
+Ä *'
+∂Ñ@aõ¬ß
+Ä *∫õr q
+Ö ,õ¬ß
+Ä *%∫õr q
+Ö Eõ¬ß
+Ä *&∫õr Åõ¬ß
+Ä *g£RÅhÑ Åõ¬ß
+Ä *$£RÅhÑ Xõ¬ß
+Ä *⁄è‡c¿  Wõ¬ß
+Ä *"⁄è‡c¿  Võ¬ß
+Ä *!⁄è‡c¿  Uõ¬ß
+Ä *⁄è‡c¿  Tõ¬ß
+Ä *⁄è‡c¿  Sõ¬ß
+Ä *⁄è‡c¿  Rõ¬ß
+Ä * ⁄è‡c¿  Qõ¬ß
+Ä *⁄è‡c¿  Põ¬ß
+Ä *⁄è‡c¿  Oõ¬ß
+Ä *⁄è‡c¿  Nõ¬ß
+Ä *⁄è‡c¿  Mõ¬ß
+Ä *⁄è‡c¿  Lõ¬ß
+Ä *⁄è‡c¿  Kõ¬ß
+Ä *⁄è‡c¿  Jõ¬ß
+Ä *<ü`S0 Iõ¬ß
+Ä *;ü`S0 Hõ¬ß
+Ä *=ü`S0 Gõ¬ß
+Ä *:ü`S0 Fõ¬ß
+Ä *-ü`S0 Eõ¬ß
+Ä *,ü`S0 Dõ¬ß
+Ä *+ü`S0 Cõ¬ß
+Ä **ü`S0 Bõ¬ß
+Ä *)ü`S0 Aõ¬ß
+Ä *(ü`S0 @õ¬ß
+Ä *'ü`S0 ?õ¬ß
+Ä *&ü`S0  õ¬ß
+Ä *g∫õr q=õ¬ß
+Ä *%ü`S0 <õ¬ß
+Ä *$ü`S0 ;õ¬ß
+Ä *#ü`S0 :õ¬ß
+Ä *ü`S0 9õ¬ß
+Ä *ü`S0 8õ¬ß
+Ä *ü`S0 7õ¬ß
+Ä *"ü`S0 6õ¬ß
+Ä *!ü`S0 5õ¬ß
+Ä *ü`S0 4õ¬ß
+Ä * ü`S0 2õ¬ß
+Ä *ü`S0 3õ¬ß
+Ä *ü`S0 0õ¬ß
+Ä *ü`S0 /õ¬ß
+Ä *ü`S0 .õ¬ß
+Ä *ü`S0 -õ¬ß
+Ä *ü`S0 ,õ¬ß
+Ä *ü`S0 Zõ¬ß
+Ä *8xÏG¬6*õ¬ß
+Ä *&ÏüÍÇ )õ¬ß
+Ä *%ÏüÍÇ (õ¬ß
+Ä *$ÏüÍÇ 'õ¬ß
+Ä *#ÏüÍÇ &õ¬ß
+Ä *6
+∂Ñ@%õ¬ß
+Ä *5
+∂Ñ@$õ¬ß
+Ä *2
+∂Ñ@#õ¬ß
+Ä *7
+∂Ñ@"õ¬ß
+Ä *9
+∂Ñ@!õ¬ß
+Ä *4
+∂Ñ@ õ¬ß
+Ä *3
+∂Ñ@bõ¬ß
+Ä *8
+∂Ñ@õ¬ß
+Ä *0
+∂Ñ@õ¬ß
+Ä *.
+∂Ñ@õ¬ß
+Ä *1
+∂Ñ@õ¬ß
+Ä */
+∂Ñ@õ¬ß
+Ä *<
+∂Ñ@õ¬ß
+Ä *;
+∂Ñ@õ¬ß
+Ä *=
+∂Ñ@õ¬ß
+Ä *:
+∂Ñ@õ¬ß
+Ä *&
+∂Ñ@õ¬ß
+Ä *$
+∂Ñ@õ¬ß
+Ä *%
+∂Ñ@õ¬ß
+Ä *#
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *"
+∂Ñ@õ¬ß
+Ä *!
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@
+õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä * 
+∂Ñ@“ õ¬ß
+Ä *
+∂Ñ@
+õ¬ß
+Ä *
+∂Ñ@	õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@ õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *%£RÅhÑ õ¬ß
+Ä *&£RÅhÑ    õ¬ß
+Ä **∫õr q[õ¬ß
+Ä *8xÏG¬6
+ a y ±
+ôA	
+·â·
+i
+˘qq I˘
+Å…
+…ËYâÅ
+Qô
+±) Ÿ
+Ÿi!
+!±Q
+¡Q9
+©…i
+9·	
+	ô Ò
+ÒÅY
+ë9ëA
+y	x ¿)
+a!_°
+1
+ÒFπ
+ 19
+È!	È—		—πÒ	π°Ÿ	° ¡	â ©
+I
+y
+1
+a°
+·È…â±q˘π)
+Y—A	q
+Ÿô	A
+©i	)
+ëQ	Y
+¡Å- ß-
+I
+I
+I
+I
+I                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            õ¬ß
+Ä *$∫õr q Ü ë õ¬ß
+Ä *-∫õr q Öõ¬ß
+Ä *
+∂Ñ@ Ñõ¬ß
+Ä *g8ó≥D Éõ¬ß
+Ä *&8ó≥D Çõ¬ß
+Ä *%8ó≥D Åõ¬ß
+Ä *$8ó≥D Äõ¬ß
+Ä *#8ó≥Dõ¬ß
+Ä *-8ó≥D~õ¬ß
+Ä *,8ó≥D}õ¬ß
+Ä *+8ó≥D|õ¬ß
+Ä **8ó≥D{õ¬ß
+Ä *)8ó≥Dzõ¬ß
+Ä *(8ó≥Dyõ¬ß
+Ä *'8ó≥Dxõ¬ß
+Ä *<8ó≥Dwõ¬ß
+Ä *;8ó≥Dvõ¬ß
+Ä *=8ó≥Duõ¬ß
+Ä *:8ó≥Dtõ¬ß
+Ä *58ó≥Dsõ¬ß
+Ä *48ó≥Drõ¬ß
+Ä *38ó≥Dqõ¬ß
+Ä *68ó≥Dpõ¬ß
+Ä *28ó≥Doõ¬ß
+Ä *78ó≥Dnõ¬ß
+Ä *98ó≥Dmõ¬ß
+Ä *88ó≥Dlõ¬ß
+Ä *8ó≥Dkõ¬ß
+Ä *8ó≥Djõ¬ß
+Ä *+
+∂Ñ@iõ¬ß
+Ä **
+∂Ñ@hõ¬ß
+Ä *)
+∂Ñ@gõ¬ß
+Ä *(
+∂Ñ@fõ¬ß
+Ä *-
+∂Ñ@eõ¬ß
+Ä *,
+∂Ñ@dõ¬ß
+Ä *'
+∂Ñ@cõ¬ß
+Ä *∫õr qa
+I Fõ¬ß
+Ä *%∫õr q`
+I `õ¬ß
+Ä *&∫õr q_
+I Hõ¬ß
+Ä *,∫õr õ¬ß
+Ä *g£RÅhÑ  Üõ¬ß
+Ä *$£RÅhÑ  Öõ¬ß
+Ä *⁄è‡c¿  Xõ¬ß
+Ä *"⁄è‡c¿  Wõ¬ß
+Ä *!⁄è‡c¿  Võ¬ß
+Ä *⁄è‡c¿  Uõ¬ß
+Ä *⁄è‡c¿  Tõ¬ß
+Ä *⁄è‡c¿  Sõ¬ß
+Ä * ⁄è‡c¿  Rõ¬ß
+Ä *⁄è‡c¿  Qõ¬ß
+Ä *⁄è‡c¿  Põ¬ß
+Ä *⁄è‡c¿  Oõ¬ß
+Ä *⁄è‡c¿  Nõ¬ß
+Ä *⁄è‡c¿  Mõ¬ß
+Ä *⁄è‡c¿  Lõ¬ß
+Ä *⁄è‡c¿  Kõ¬ß
+Ä *<ü`S0 Jõ¬ß
+Ä *;ü`S0 Iõ¬ß
+Ä *=ü`S0 Hõ¬ß
+Ä *:ü`S0 Gõ¬ß
+Ä *-ü`S0 Fõ¬ß
+Ä *,ü`S0 Eõ¬ß
+Ä *+ü`S0 Dõ¬ß
+Ä **ü`S0 Cõ¬ß
+Ä *)ü`S0 Bõ¬ß
+Ä *(ü`S0 Aõ¬ß
+Ä *'ü`S0 @õ¬ß
+Ä *&ü`S0 ?˘ õ¬ß
+Ä *g∫õr qYõ¬ß
+Ä *%ü`S0 =õ¬ß
+Ä *$ü`S0 <õ¬ß
+Ä *#ü`S0 ;õ¬ß
+Ä *ü`S0 :õ¬ß
+Ä *ü`S0 9õ¬ß
+Ä *ü`S0 8õ¬ß
+Ä *"ü`S0 7õ¬ß
+Ä *!ü`S0 6õ¬ß
+Ä *ü`S0 5õ¬ß
+Ä * ü`S0 4õ¬ß
+Ä *ü`S0 2õ¬ß
+Ä *ü`S0 3õ¬ß
+Ä *ü`S0 0õ¬ß
+Ä *ü`S0 /õ¬ß
+Ä *ü`S0 .õ¬ß
+Ä *ü`S0 -õ¬ß
+Ä *ü`S0 ,õ¬ß
+Ä *8xÏG¬6Zõ¬ß
+Ä *&ÏüÍÇ *õ¬ß
+Ä *%ÏüÍÇ )õ¬ß
+Ä *$ÏüÍÇ (õ¬ß
+Ä *#ÏüÍÇ 'õ¬ß
+Ä *6
+∂Ñ@&õ¬ß
+Ä *5
+∂Ñ@%õ¬ß
+Ä *2
+∂Ñ@$õ¬ß
+Ä *7
+∂Ñ@#õ¬ß
+Ä *9
+∂Ñ@"õ¬ß
+Ä *4
+∂Ñ@!õ¬ß
+Ä *3
+∂Ñ@ õ¬ß
+Ä *8
+∂Ñ@bõ¬ß
+Ä *0
+∂Ñ@õ¬ß
+Ä *.
+∂Ñ@õ¬ß
+Ä *1
+∂Ñ@õ¬ß
+Ä */
+∂Ñ@õ¬ß
+Ä *<
+∂Ñ@õ¬ß
+Ä *;
+∂Ñ@õ¬ß
+Ä *=
+∂Ñ@õ¬ß
+Ä *:
+∂Ñ@õ¬ß
+Ä *&
+∂Ñ@õ¬ß
+Ä *$
+∂Ñ@õ¬ß
+Ä *%
+∂Ñ@õ¬ß
+Ä *#
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *"
+∂Ñ@õ¬ß
+Ä *!
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@
+õ¬ß
+Ä * 
+∂Ñ@— õ¬ß
+Ä *
+∂Ñ@
+õ¬ß
+Ä *
+∂Ñ@
+õ¬ß
+Ä *
+∂Ñ@	õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@ õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *
+∂Ñ@õ¬ß
+Ä *%£RÅhÑ õ¬ß
+Ä *&£RÅhÑ    õ¬ß
+Ä *£RÅhÑ õ¬ß
+Ä *8xÏG¬6[
+   J
+ Ìÿƒ≥ãs^F.Ó‘Ω´îlR?,
+Ú
+ﬂ
+Œ
+Ω
+ß
+î
+Ä
+m
+Z
+F
+2
+
+˘‰–ø™ójR:#
+˙
+‡
+…
+∑
+†
+ã
+x
+^
+K
+8
+$
+
+˛
+Î
+⁄
+…
+≥
+†
+å
+y
+f
+R
+>
+*
+û                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            J§´˛◊¿xcmukI§´˛◊¿xchrungH§´˛◊¿xbnecroG§´˛◊¿xamordyF§´˛◊¿xamordE§´˛◊¿x`aggyD§´˛◊¿x_cromsC§´˛◊¿x_cromB§´˛◊¿x_manikinA§´˛◊¿x^bt@§´˛◊¿x]d2?§´˛◊¿x]dhio>§´˛◊¿x]dino=§´˛◊¿x\gele<§´˛◊¿x[prime;§´˛◊¿x[base:§´˛◊¿x[prot9#§´˛◊¿xZancienttree8§´˛◊¿xZtree7§´˛◊¿xZthymea6§´˛◊¿xYnorthbat5§´˛◊¿xYbat4§´˛◊¿xYsciathan3#§´˛◊¿xXriverdragon2§´˛◊¿xXdragon1§´˛◊¿xXdraig0§´˛◊¿xWeastring/§´˛◊¿xVsouthring.§´˛◊¿xUcentering-§´˛◊¿xUcentre,§´˛◊¿xTnorthring+§´˛◊¿x
+unox*§´˛◊¿xsnorri)§´˛◊¿xKpy(§´˛◊¿xIchain'§´˛◊¿xGswampy&§´˛◊¿xBcopp%õ¬ß
+Ä *=muk$õ¬ß
+Ä *=hrung#õ¬ß
+Ä *<necro"õ¬ß
+Ä *;mordy!õ¬ß
+Ä *;mord õ¬ß
+Ä *:aggyõ¬ß
+Ä *9cromsõ¬ß
+Ä *9cromõ¬ß
+Ä *9manikinõ¬ß
+Ä *8btõ¬ß
+Ä *7d2õ¬ß
+Ä *7dhioõ¬ß
+Ä *7dinoõ¬ß
+Ä *6geleõ¬ß
+Ä *5primeõ¬ß
+Ä *5baseõ¬ß
+Ä *5prot#õ¬ß
+Ä *4ancienttreeõ¬ß
+Ä *4treeõ¬ß
+Ä *4thymeaõ¬ß
+Ä *3northbatõ¬ß
+Ä *3batõ¬ß
+Ä *3sciathan#õ¬ß
+Ä *2riverdragon
+õ¬ß
+Ä *2dragonõ¬ß
+Ä *2draig
+õ¬ß
+Ä *1eastring
+õ¬ß
+Ä *0southring	õ¬ß
+Ä */centeringõ¬ß
+Ä */centre õ¬ß
+Ä *.northringõ¬ß
+Ä *-unoxKõ¬ß
+Ä *gsnorriõ¬ß
+Ä *"pyõ¬ß
+Ä * chainõ¬ß
+Ä *swampyõ¬ß
+Ä *copp
+   J
+c 
+égCº
+⁄Pg»Ô
+≥
+†
+Í
+˙¸#
+C
+≈
+|
+i
+2
+V¶{0U∏„Õ§9€íÄí
+ø
+ò
+t
+Ì
+
+Åò˘
+ 
+‰
+—
+
++
+=-AT
+O
+t
+ˆ
+≠
+ö
+c
+á
+◊¨
+a
+ÜÈ
+˛’j
+
+√
+±√                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       §´˛◊¿xmukJ§´˛◊¿xhrungI§´˛◊¿xnecroH§´˛◊¿xmordyG§´˛◊¿xmordF§´˛◊¿xaggyE§´˛◊¿xcromsD§´˛◊¿xcromC§´˛◊¿xmanikinB§´˛◊¿xbtA§´˛◊¿xd2@§´˛◊¿xdhio?§´˛◊¿xdino>§´˛◊¿xgele=§´˛◊¿xprime<§´˛◊¿xbase;§´˛◊¿xprot:#§´˛◊¿xancienttree9§´˛◊¿xtree8§´˛◊¿xthymea7§´˛◊¿xnorthbat6§´˛◊¿xbat5§´˛◊¿xsciathan4#§´˛◊¿xriverdragon3§´˛◊¿xdragon2§´˛◊¿xdraig1§´˛◊¿xeastring0§´˛◊¿xsouthring/§´˛◊¿xcentering.§´˛◊¿xcentre-§´˛◊¿xnorthring,§´˛◊¿xunox+§´˛◊¿xsnorri*§´˛◊¿xpy)§´˛◊¿xchain(§´˛◊¿xswampy'§´˛◊¿xcopp&õ¬ß
+Ä *muk%õ¬ß
+Ä *hrung$õ¬ß
+Ä *necro#õ¬ß
+Ä *mordy"õ¬ß
+Ä *mord!õ¬ß
+Ä *aggy õ¬ß
+Ä *cromsõ¬ß
+Ä *cromõ¬ß
+Ä *manikinõ¬ß
+Ä *btõ¬ß
+Ä *d2õ¬ß
+Ä *dhioõ¬ß
+Ä *dinoõ¬ß
+Ä *geleõ¬ß
+Ä *primeõ¬ß
+Ä *baseõ¬ß
+Ä *prot#õ¬ß
+Ä *ancienttreeõ¬ß
+Ä *treeõ¬ß
+Ä *thymeaõ¬ß
+Ä *northbatõ¬ß
+Ä *batõ¬ß
+Ä *sciathan#õ¬ß
+Ä *riverdragonõ¬ß
+Ä *dragon
+õ¬ß
+Ä *draigõ¬ß
+Ä *eastring
+õ¬ß
+Ä *southring
+õ¬ß
+Ä *centering	õ¬ß
+Ä *centreõ¬ß
+Ä *northring õ¬ß
+Ä *unoxõ¬ß
+Ä *snorriKõ¬ß
+Ä *pyõ¬ß
+Ä *chainõ¬ß
+Ä *swampy	õ¬ß
+Ä *copp
+
+È - ˘ Õ
+∑
+Ö
+T
+#
+Ò
+ø
+ç
+]
+	–	à	B˙≥m) È • c ﬁú`$Ë¨o2ı∏{> πq*‰öN√Ä> ˘ ˘≥{?œôa+ÛºÜR"ÓºàW%˘Õ°tGÌ¿âQ ‰ ‰       9 	
+
+õ¬ß
+Ä *¶Ü‚DI180hƒß≤
+¶=≈⁄@ F£RÅhÑ DL   
+
+§´˛◊C8 !
+
+õ¬ß
+Ä *¶Ü‚DIBloodthorn ¯h√¡Ô
+¶=≈⁄@ F∫õr qEGê@7 
+
+õ¬ß
+Ä *¶Ü‚DIDhiothu ¯h√¡Ô
+¶=≈⁄@ F∫õr qEGêA6 
+
+õ¬ß
+Ä *¶Ü‚DIGelebron Äh√¡Ô
+¶=≈⁄@ F∫õr qEGê?5 
+
+õ¬ß
+Ä *¶Ü‚DIProteus8h√¡Ô
+¶=≈⁄@ F∫õr qEGH4 +
+
+õ¬ß
+Ä *¶Ü‚DIThymea Banebark h√¡Ô
+¶=≈⁄@ F∫õr qEGHJ3 /
+
+õ¬ß
+Ä *¶Ü‚DISciathan Leathair h√¡Ô
+¶=≈⁄@ F∫õr qEG,H2 +
+
+õ¬ß
+Ä *¶Ü‚DIDraig Liathphur h√¡Ô
+¶=≈⁄@ F∫õr qEGHD1 
+
+õ¬ß
+Ä *¶Ü‚DIEast Ring ◊h√¡Ô
+¶=≈⁄@ F∫õr qRings2E0 !
+
+õ¬ß
+Ä *¶Ü‚DISouth Ring ◊h√¡Ô
+¶=≈⁄@ F∫õr qRings2F/ #
+
+õ¬ß
+Ä *¶Ü‚DICenter Ring ◊h√¡Ô
+¶=≈⁄@ F∫õr qRings2E. !
+
+õ¬ß
+Ä *¶Ü‚DINorth Ring ◊h√¡Ô
+¶=≈⁄@ F∫õr qRings2<- 
+
+õ¬ß
+Ä *¶Ü‚DI215 ÜhƒËè
+¶=≈⁄@ F∫õr qEDL;, 
+
+õ¬ß
+Ä *¶Ü‚DI210}hƒÂm
+¶=≈⁄@ F∫õr qEDL;+ 
+
+õ¬ß
+Ä *¶Ü‚DI205uh√¡Ô
+¶=≈⁄@ F∫õr qEDL;* 
+
+õ¬ß
+Ä *¶Ü‚DI200lhƒÎÃ
+¶=≈⁄@ F∫õr qEDL;) 
+
+õ¬ß
+Ä *¶Ü‚DI195Yh√¡Ô
+¶=≈⁄@ F∫õr qEDL;( 
+
+õ¬ß
+Ä *¶Ü‚DI190Qh√¡Ô
+¶=≈⁄@ F∫õr qEDL;' 
+
+õ¬ß
+Ä *¶Ü‚DI185Hh√¡Ô
+¶=≈⁄@ F∫õr qEDL:& 
+
+õ¬ß
+Ä *¶Ü‚DI170NhƒÊ«
+¶=≈⁄@ F∫õr qDL:% 
+
+õ¬ß
+Ä *¶Ü‚DI165Ihƒ‚Ê
+¶=≈⁄@ F∫õr qDL:$ 
+
+õ¬ß
+Ä *¶Ü‚DI160Dh√¡Ô
+¶=≈⁄@ F∫õr qDL:# 
+
+õ¬ß
+Ä *¶Ü‚DI155?hƒ€w
+¶=≈⁄@ F∫õr qDL@" 
+
+õ¬ß
+Ä *¶Ü‚DIPyrus:h√¡Ô
+¶=≈⁄@ F∫õr qFrozen?! 
+
+õ¬ß
+Ä *¶Ü‚DIGrom0h√¡Ô
+¶=≈⁄@ F∫õr qFrozenB  
+
+õ¬ß
+Ä *¶Ü‚DIChained+hƒﬂ¬
+¶=≈⁄@ F∫õr qFrozen@ 
+
+õ¬ß
+Ä *¶Ü‚DIWoody&h√¡Ô
+¶=≈⁄@ F∫õr qFrozenB 
+
+õ¬ß
+Ä *¶Ü‚DISwampie!h√¡Ô
+¶=≈⁄@ F∫õr qFrozen> 
+
+õ¬ß
+Ä *¶Ü‚DIEyeh√¡Ô
+¶=≈⁄@ F∫õr qFrozenB 
+
+õ¬ß
+Ä *¶Ü‚DIRedbaneh√¡Ô
+¶=≈⁄@ F∫õr qFrozenD 
+
+õ¬ß
+Ä *¶Ü‚DIFalgren-h√¡Ô
+¶=≈⁄@ F∫õr qMeteoricE 
+
+õ¬ß
+Ä *¶Ü‚DIGoretuskh√¡Ô
+¶=≈⁄@ F∫õr qMeteoricF 
+
+õ¬ß
+Ä *¶Ü‚DICoppingerhƒûØ
+¶=≈⁄@ F∫õr qMeteoricD 
+
+õ¬ß
+Ä *¶Ü‚DIRedbaneh√¡Ô
+¶=≈⁄@ F∫õr qMeteoricF 
+
+õ¬ß
+Ä *¶Ü‚DIRockbellyh√¡Ô
+¶=≈⁄@ F∫õr qMeteoricD 
+
+õ¬ß
+Ä *¶Ü‚DIBonehadh√¡Ô
+¶=≈⁄@ F∫õr qMeteoricE 
+
+õ¬ß
+Ä *¶Ü‚DIDoomclaw h√¡Ô
+¶=≈⁄@ F∫õr qMeteoric.
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ôBTh√Ä#£RÅhÑ EG0 	 
+
+§´˛◊¿x§´ˇ4Ä ôDinoh√Ä#£RÅhÑ EG0
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ô210h√Ä#£RÅhÑ EDL0
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ô215h√Ä#£RÅhÑ EDL/	 	 
+
+§´˛◊¿x§´ˇ4Ä ô182h√Ä#£RÅhÑ DL/ 	 
+
+§´˛◊¿x§´ˇ4Ä ô169h√Ä#£RÅhÑ DL0   
+
+§´˛◊¿x§´ˇ4Ä ô181h√Ä#£RÅhÑ DL0  
+
+§´˛◊¿x§´ˇ4Ä ô170h√Ä#£RÅhÑ DL  ‰ 
+
+§´˛◊¿x§´ˇ4Ä ô180h√Ä#£RÅhÑ DL  Â !
+
+õ¬ß
+Ä *Bloodthorn ¯h√¡Ô
+¶=≈⁄@ F∫õr qEGê  ® 
+
+õ¬ß
+Ä *Dhiothu ¯h√¡Ô
+¶=≈⁄@ F∫õr qEGê  n 
+
+õ¬ß
+Ä *Gelebron Äh√¡Ô
+¶=≈⁄@ F∫õr qEGê  3 
+
+õ¬ß
+Ä *Proteus8h√¡Ô
+¶=≈⁄@ F∫õr qEG  ˙ +
+
+õ¬ß
+Ä *Thymea Banebark h√¡Ô
+¶=≈⁄@ F∫õr qEGH  ∏ /
+
+õ¬ß
+Ä *Sciathan Leathair h√¡Ô
+¶=≈⁄@ F∫õr qEG,  t +
+
+õ¬ß
+Ä *Draig Liathphur h√¡Ô
+¶=≈⁄@ F∫õr qEGH  2 
+
+õ¬ß
+Ä *East Ring ◊h√¡Ô
+¶=≈⁄@ F∫õr qRings2  Ù !
+
+õ¬ß
+Ä *South Ring ◊h√¡Ô
+¶=≈⁄@ F∫õr qRings2  µ	 
+
+§´˛◊¿x§´ˇ4Ä ôDinoh¬m£RÅhÑ EGœ$ 
+
+§´˛◊¿x§´ˇ4Ä ô170h¬mX£RÅhÑ DL/
+
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ô210h¬m£RÅhÑ EDLœ ¬	 
+
+§´˛◊¿x§´ˇ4Ä ô215h¬m£RÅhÑ EDLœ ë	 
+
+§´˛◊¿x§´ˇ4Ä ô182h¬l˝£RÅhÑ DLœ a	 
+
+§´˛◊¿x§´ˇ4Ä ô169h¬m£RÅhÑ DLœ 1 
+
+§´˛◊¿x§´ˇ4Ä ô181h¬mX£RÅhÑ DL-
+
+ 	 
+
+§´˛◊¿x§´ˇ4Ä ôBTh¬m#£RÅhÑ 1  
+
+§´˛◊¿x§´ˇ4Ä ô180Xh√Ä#£RÅhÑ DL
+C ,ç ÷ç
+–á
+÷
+û
+h
+0
+˘
+√
+è
+_
++	˘	≈	î	b	6	
+ﬁ±ÑW* ˝ ∆ é W !∆äPÏ∫ÖJ
+Ÿ
+ù
+dT\                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          /h   
+
+õ¬ß
+Ä *CoppWhƒ´I
+8xÏG¬6DefaultG: 
+
+õ¬ß
+Ä *¶Ü‚DIAggorath∞h√¡Ô
+¶=≈⁄@ F∫õr qMidraids¿I9 -
+
+õ¬ß
+Ä *¶Ü‚DICrom‚Äôs ManikinÄh√¡Ô
+¶=≈⁄@ F∫õr qEG†4W   
+
+§´˛◊¿xEast Ring ◊h√Ä#
+£RÅhÑ Rings25V  ! 
+
+§´˛◊¿xSouth Ring ◊h√Ä#
+£RÅhÑ Rings26U  # 
+
+§´˛◊¿xCenter Ring ◊h√Ä#
+£RÅhÑ Rings25T  ! 
+
+§´˛◊¿xNorth Ring ◊h√Ä#
+£RÅhÑ Rings2+S   
+
+§´˛◊¿x205uh√Ä#
+£RÅhÑ EDL+R   
+
+§´˛◊¿x200lh√Ä#
+£RÅhÑ EDL+Q   
+
+§´˛◊¿x195Yh√Ä#
+£RÅhÑ EDL+P   
+
+§´˛◊¿x190Qh√Ä#
+£RÅhÑ EDL+O   
+
+§´˛◊¿x185Hh√Ä#
+£RÅhÑ EDL*N   
+
+§´˛◊¿x165Ih√Ä#
+£RÅhÑ DL*M   
+
+§´˛◊¿x160Dh√Ä#
+£RÅhÑ DL*L   
+
+§´˛◊¿x155?h√Ä#
+£RÅhÑ DL0K   
+
+§´˛◊¿xPyrus:h√Ä#
+£RÅhÑ Frozen/J   
+
+§´˛◊¿xGrom0h√Ä#
+£RÅhÑ Frozen2I   
+
+§´˛◊¿xChained+h√Ä#
+£RÅhÑ Frozen0H   
+
+§´˛◊¿xWoody&h√Ä#
+£RÅhÑ Frozen2G   
+
+§´˛◊¿xSwampie!h√Ä#
+£RÅhÑ Frozen.F   
+
+§´˛◊¿xEyeh√Ä#
+£RÅhÑ Frozen2E   
+
+§´˛◊¿xRedbaneh√Ä#
+£RÅhÑ Frozen4D   
+
+§´˛◊¿xFalgren-h√Ä#
+£RÅhÑ Meteoric5C   
+
+§´˛◊¿xGoretuskh√Ä#
+£RÅhÑ Meteoric6B   
+
+§´˛◊¿xCoppingerh√Ä#
+£RÅhÑ Meteoric4A   
+
+§´˛◊¿xRedbaneh√Ä#
+£RÅhÑ Meteoric6@   
+
+§´˛◊¿xRockbellyh√Ä#
+£RÅhÑ Meteoric4?   
+
+§´˛◊¿xBonehadh√Ä#
+£RÅhÑ Meteoric5>   
+
+§´˛◊¿xDoomclaw h√Ä#
+£RÅhÑ Meteoric     
+
+1g  
+
+õ¬ß
+Ä *¶Ü‚DI180XhƒÊE∫õr qDLG= 
+
+õ¬ß
+Ä *¶Ü‚DIHrungnir(h√¡Ô
+¶=≈⁄@ F∫õr qMidraids¿J< #
+
+õ¬ß
+Ä *¶Ü‚DINecromancer(h√¡Ô
+¶=≈⁄@ F∫õr qMidraids¿F; 
+
+õ¬ß
+Ä *¶Ü‚DIMordris∞h√¡Ô
+¶=≈⁄@ F∫õr qMidraids¿7c   
+
+§´˛◊¿xHrungnir(h√Ä#
+£RÅhÑ Midraids¿:b  # 
+
+§´˛◊¿xNecromancer(h√Ä#
+£RÅhÑ Midraids¿6a   
+
+§´˛◊¿xMordris∞h√Ä#
+£RÅhÑ Midraids¿7`   
+
+§´˛◊¿xAggorath∞h√Ä#
+£RÅhÑ Midraids¿9_  - 
+
+§´˛◊¿xCrom‚Äôs ManikinÄh√Ä#
+£RÅhÑ EG†3^  ! 
+
+§´˛◊¿xBloodthorn ¯h√Ä#
+£RÅhÑ EGê0]   
+
+§´˛◊¿xDhiothu ¯h√Ä#
+£RÅhÑ EGê1\   
+
+§´˛◊¿xGelebron Äh√Ä#
+£RÅhÑ EGê/[   
+
+§´˛◊¿xProteus8h√Ä#
+£RÅhÑ EG8Z  + 
+
+§´˛◊¿xThymea Banebark h√Ä#
+£RÅhÑ EGH:Y  / 
+
+§´˛◊¿xSciathan Leathair h√Ä#
+£RÅhÑ EG,8X  + 
+
+§´˛◊¿xDraig Liathphur h√Ä#
+£RÅhÑ EGH
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+ È	6·äcÈ                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             Huõ¬ß
+Ä *
+∂Ñ@Warden,Meteoric,Frozen,DL,EDL,Midraids,Rings,DefaultK{õ¬ß
+Ä *
+†=¬0Warden,Meteoric,Frozen,DL,EDL,Midraids,Rings,EG,Default+;õ¬ß
+Ä *£RÅhÑ Meteoric,DL,EDL,Defaultõ¬ß
+Ä *∫õr qDL,EDL∞ 
+
+õ¬ß
+$-õ¬ß
+Ä *&*ÖQÑWarden,Frozen,DL   1oõ¬ß
+Ä *
+∂Ñ@Warden,Meteoric,Frozen,EDL,
+õ¬ß
+Ä *
+∂Ñ@ultEDLEDL
+   ì ì’©øÎ                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 õ¬ß
+Ä *
+†=¬0õ¬ß
+Ä *∫õr qõ¬ß
+Ä *&*ÖQÑõ¬ß
+Ä *
+∂Ñ@	õ¬ß
+Ä *£RÅhÑ 
+     Ÿ¥ìqJ&ﬂ                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       $õ¬ß
+Ä *DefaultßZ¨¿e¶ÖT≥  õ¬ß
+Ä *EGßÑ—7@ ZßÑùä¿ 2"õ¬ß
+Ä *RingsßÑÕÙ  qßÑùä¿ 2%õ¬ß
+Ä *MidraidsßÑ  B åßÑùä¿ 2 õ¬ß
+Ä *EDLßÑ≈”ÄxßÑùä¿ 2õ¬ß
+Ä *DLßÑ¡≥^ßÑùä¿ 2#õ¬ß
+Ä *FrozenßÑº7@(ßÑùä¿ 2%õ¬ß
+Ä *MeteoricßÑ∂ı@QßÑùä¿ 2
+    } «∂}◊Î†çç                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                õ¬ß
+Ä *Defaultõ¬ß
+Ä *EG õ¬ß
+Ä *Ringsõ¬ß
+Ä *Midraidsõ¬ß
+Ä *EDLõ¬ß
+Ä *DLõ¬ß
+Ä *Frozen	õ¬ß
+Ä *Meteoric
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+
+’ 
+« 
+´
+Y«
+\
+3
+,	Ì›ñ u ,`'>˚÷Á†c œ œ                                                     AU/ indexsqlite_autoindex_reaction_role_m                                                       AU/ indexsqlite_autoindex_reaction_role_map_1reaction_role_map  c    G[5 indexsqlite_autoindex_reaction_role_panels_1reaction_role_panelsÇ: 55Ñtablereaction_role_panelsreaction_role_panelsCREATE TABLE reaction_role_panels (
+        guild_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        title TEXT DEFAULT '',
+        description TEXT DEFAULT '',
+        PRIMARY KEY (guild_id, message_id)
+    )EY3 indexsqlite_autoindex_subscription_panels_1subscription_panelsÅl 33Çtablesubscription_panelssubscription_panelsCREATE TABLE subscription_panels (
+        guild_id INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, category)
+    )?S- indexsqlite_autoindex_user_timer_prefs_1user_timer_prefsÅa --Çutableuser_timer_prefsuser_timer_prefsCREATE TABLE user_timer_prefs (
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        categories TEXT NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+    )AU/ indexsqlite_autoindex_category_channels_1category_channelsÅf //Ç{tablecategory_channelscategory_channelsCREATE TABLE category_channels (
+        guild_id INTEGER NOT NULL,
+        category TEÉ+ %%Ütableguild_configguild_configCREATE TABLE guild_config (
+                guild_id INTEGER PRIMARY KEY,
+                default_channel INTEGER DEFAULT NULL
+            , prefix TEXT DEFAULT NULL, sub_channel_id INTEGER DEFAULT NULL, sub_message_id INTEGER DEFAULT NULL, uptime_minutes INTEGER DEFAULT NULL, heartbeat_channel_id INTEGER DEFAULT NULL, show_eta INTEGER DEFAULT 0, sub_ping_channel_id INTEGER DEFAULT NULL)Ç
+ 55É_tablesubscription_memberssubscription_members
+CREATE TABLE subscription_members (
+                guild_id INTEGER NOT NULL,
+                boss_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, boss_id, user_id)
+            )E	Y3 indexsqlite_autoindex_subscription_emojis_1subscription_emojis
+Ç
+ 33ÉAtablesubscription_emojissubscription_emojis	CREATE TABLE subscription_emojis (
+                guild_id INTEGER NOT NULL,
+                boss_id INTEGER NOT NULL,
+                emoji TEXT NOT NULL,
+                PRIMARY KEY (guild_id, boss_id)
+            )= Q+ indexsqlite_autoindex_category_colors_1category_colorsÇ ++É?tablecategory_colorscategory_colors CREATE TABLE category_colors (
+                guild_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                color_hex TEXT NOT NULL,
+                PRIMARY KEY (guild_id, category)
+            )'; indexsqlite_autoindex_meta_1metaw ÅQtablemetametaCREATE TABLE meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )  Ñ%%ÖEtableguild_configguild_configCREATE TABLE guild_config (
+                guild_id INTEGER PRIMARY KEY,
+                default_channel INTEGER DEFAULT NULL
+            , prefix TEXT DEFAULT NULL, sub_channel_id INTEGER DEFAULT NULL, sub_message_id INTEGER DEFAULT NULL, uptime_minutes INTEGER DEFAULT NULL, heartbeat_channel_id INTEGER DEFAULT NULL, show_eta INTEGER DEFAULT 0)P++Ytablesqlite_sequencesqlite_sequenceCREATE TABLE sqlite_sequence(name,seq)ÑR àtablebossesbossesCREATE TABLE bosses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER,
+                name TEXT NOT NULL,
+                spawn_minutes INTEGER NOT NULL,
+                next_spawn_ts INTEGER NOT NULL,
+                pre_announce_min INTEGER DEFAULT 10,
+                trusted_role_id INTEGER DEFAULT NULL,
+                created_by INTEGER,
+                notes TEXT DEFAULT ''
+            , category TEXT DEFAULT NULL, sort_key TEXT DEFAULT '', window_minutes INTEGER DEFAULT 0)
+I ˘ ∑Î≤
+…
+Ü¢a’
++	Ó	•îQÂ
+ìŸ®˘¶                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         Å* Ç#tableblacklistblacklist"CREATE TABLE blacklist (
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+    )1E indexsqlite_autoindex_blacklist_1blacklist#ÅL Çstablerr_maprr_map CREATE TABLE rr_map (
+        panel_message_id INTEGER NOT NULL,
+        emoji TEXT NOT NULL,
+        role_id INTEGER NOT NULL,
+        PRIMARY KEY (panel_message_id, emoji)
+    )+? indexsqlite_autoindex_rr_map_1rr_map!Ç
+ 33ÉAtablesubscription_panelssubscription_panelsCREATE TABLE subscription_panels (
+        guild_id INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        message_id INTEGER NOT NULL, channel_id INTEGER DEFAULT NULL,
+        PRIMARY KEY (guild_id, category)
+    )Ç$ ))Ñtableuser_blacklistuser_blacklistCREATE TABLE user_blacklist (
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        reason TEXT DEFAULT '',
+        added_by INTEGER DEFAULT NULL,
+        added_ts INTEGER DEFAULT 0,
+        PRIMARY KEY (guild_id, user_id)
+    );O) indexsqlite_autoindex_user_blacklist_1user_blacklist
+r     AU/ indexsqlite_autoindex_reaction_role_map_1reaction_role_mapÇ //ÉKtablereaction_role_mapreaction_role_mapCREATE TABLE reaction_role_map (
+        guild_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        emoji TEXT NOT NULL,
+        role_id INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, message_id, emoji)
+    )G[5 indexsqlite_autoindex_reaction_role_panels_1reaction_role_panelsÇ: 55Ñtablereaction_role_panelsreaction_role_panelsCREATE TABLE reaction_role_panels (
+        guild_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        title TEXT DEFAULT '',
+        description TEXT DEFAULT '',
+        PRIMARY KEY (guild_id, message_id)
+    )EY3 indexsqlite_autoindex_subscription_panels_1subscription_panels   !33Çtablesubscription_panelÅK Çetablerr_panelsrr_panelsCREATE TABLE rr_panels (
+        message_id INTEGER PRIMARY KEY,
+        guild_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        title TEXT DEFAULT ''
+    )?S- indexsqlite_autoindex_user_timer_prefs_1user_timer_prefsÅa --Çutableuser_timer_prefsuser_timer_prefsCREATE TABLE user_timer_prefs (
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        categories TEXT NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+    )AU/ indexsqlite_autoindex_category_channels_1category_channelsÅf //Ç{tablecategory_channelscategory_channelsCREATE TABLE category_channels (
+        guild_id INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        channel_id INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, category)
+    )7
+K% indexsqlite_autoindex_boss_aliases_1boss_aliasesÅI %%ÇUtableboss_aliasesboss_aliases
+CREATE TABLE boss_aliases (
+        guild_id INTEGER NOT NULL,
+        boss_id INTEGER NOT NULL,
+        alias TEXT NOT NULL,
+        UNIQUE (guild_id, alias)
+    )G
+[5 indexsqlite_autoindex_subscription_members_1subscription_members
+   ‹ ‹                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  "
+õ¬ß
+Ä *ƒt$ƒ n£RÅhÑ h√§l
+   Î Î                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 	õ¬ß
+Ä *ƒt$ƒ n
+   k k                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 Å
+âÈÌÔÑØÑÄP Åuõ¬ß
+Ä *¶àÖÀ¬)Before you can access the timer, this is an acknowledgment that abusing the bot will be reprehensible by leadership.
+   Ê Ê                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            ßnã¬ PüèÜ¶=≈⁄@ F
+   Ô Ô                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     	ßnã¬ PüèÜ
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              

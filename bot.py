@@ -831,7 +831,6 @@ SEED_DATA: List[Tuple[str, str, int, int, List[str]]] = [
     ("Meteoric", "Goretusk", 20, 5, []),
 
     # FROZEN
-    ("Frozen", "Redbane", 20, 5, []),
     ("Frozen", "Eye", 28, 3, []),
     ("Frozen", "Swampie", 33, 3, ["swampy"]),
     ("Frozen", "Woody", 38, 3, []),
