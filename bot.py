@@ -3396,6 +3396,207 @@ class RosterConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="You're set. Welcome.", view=None)
 # ==================== END ROSTER SAVE FIX + OPTIONAL ALT INTAKE ====================
 
+# ==================== CONFIG HELPERS + SCHEMA ====================
+async def _cfg_get_int(gid: int, field: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(f"SELECT {field} FROM guild_config WHERE guild_id=?", (gid,))
+        r = await c.fetchone()
+        return int(r[0]) if r and r[0] is not None else None
+
+async def _cfg_set_int(gid: int, field: str, val: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+        c = await db.execute("PRAGMA table_info(guild_config)")
+        cols = {row[1] for row in await c.fetchall()}
+        if field not in cols:
+            coltype = "TEXT" if field == "prefix" else "INTEGER"
+            await db.execute(f"ALTER TABLE guild_config ADD COLUMN {field} {coltype} DEFAULT NULL")
+        await db.execute(
+            f"INSERT INTO guild_config (guild_id,{field}) VALUES (?,?) "
+            f"ON CONFLICT(guild_id) DO UPDATE SET {field}=excluded.{field}",
+            (gid, val)
+        ); await db.commit()
+
+async def get_welcome_channel_id(gid: int): return await _cfg_get_int(gid, "welcome_channel_id")
+async def set_welcome_channel_id(gid: int, cid: int): return await _cfg_set_int(gid, "welcome_channel_id", int(cid))
+async def get_roster_channel_id(gid: int): return await _cfg_get_int(gid, "roster_channel_id")
+async def set_roster_channel_id(gid: int, cid: int): return await _cfg_set_int(gid, "roster_channel_id", int(cid))
+async def get_auto_member_role_id(gid: int): return await _cfg_get_int(gid, "auto_member_role_id")
+async def set_auto_member_role_id(gid: int, rid: int): return await _cfg_set_int(gid, "auto_member_role_id", int(rid))
+async def get_welcome_message_id(gid: int): return await _cfg_get_int(gid, "welcome_message_id")
+async def set_welcome_message_id(gid: int, mid: int): return await _cfg_set_int(gid, "welcome_message_id", int(mid))
+
+@bot.listen("on_ready")
+async def __cfg_helpers_migrate_on_ready():
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+            needed = ["welcome_channel_id","roster_channel_id","auto_member_role_id","welcome_message_id",
+                      "heartbeat_channel_id","uptime_minutes"]
+            c = await db.execute("PRAGMA table_info(guild_config)")
+            cols = {row[1] for row in await c.fetchall()}
+            for col in needed:
+                if col not in cols:
+                    await db.execute(f"ALTER TABLE guild_config ADD COLUMN {col} INTEGER DEFAULT NULL")
+            await db.commit()
+    except Exception as e:
+        log.warning(f"[migrate] cfg helpers init failed: {e}")
+# ==================== END CONFIG HELPERS + SCHEMA ====================
+
+# ==================== WELCOME PROMPT ====================
+class WelcomeRootView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Start Roster", style=discord.ButtonStyle.primary, custom_id="start_roster_btn")
+    async def start_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = RosterStartView() if "RosterStartView" in globals() else None
+        if view:
+            await interaction.response.send_message("Let's get your roster set up.", ephemeral=True, view=view)
+        else:
+            await interaction.response.send_message("Roster intake is unavailable in this build.", ephemeral=True)
+
+async def ensure_welcome_prompt(guild: discord.Guild):
+    gid = guild.id
+    ch_id = await get_welcome_channel_id(gid)
+    if not ch_id:
+        return
+    ch = guild.get_channel(ch_id)
+    if not ch or not can_send(ch):
+        return
+    view = WelcomeRootView()
+    content = "New here? Tap to start."
+    msg_id = await get_welcome_message_id(gid)
+    if msg_id:
+        try:
+            msg = await ch.fetch_message(msg_id)
+            try:
+                await msg.edit(content=content, view=view)
+                return
+            except Exception:
+                pass
+        except Exception:
+            pass
+    try:
+        msg = await ch.send(content, view=view)
+        await set_welcome_message_id(gid, msg.id)
+    except Exception as e:
+        log.warning(f"[welcome] ensure prompt failed for g{gid}: {e}")
+
+_ensure_welcome_prompt = ensure_welcome_prompt
+# ==================== END WELCOME PROMPT ====================
+
+# ==================== MINIMAL CONFIG COMMANDS (additive) ====================
+from discord import app_commands as _ac_cfg
+
+@_ac_cfg.command(name="setup-welcome", description="Set the channel that shows the Start Roster button")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
+async def setup_welcome(interaction: discord.Interaction, channel: discord.TextChannel):
+    await set_welcome_channel_id(interaction.guild.id, channel.id)
+    await interaction.response.send_message(f"Welcome channel set to {channel.mention}.", ephemeral=True)
+    await ensure_welcome_prompt(interaction.guild)
+
+@_ac_cfg.command(name="setup-roster", description="Set the public roster channel")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
+async def setup_roster(interaction: discord.Interaction, channel: discord.TextChannel):
+    await set_roster_channel_id(interaction.guild.id, channel.id)
+    await interaction.response.send_message(f"Roster channel set to {channel.mention}.", ephemeral=True)
+
+@_ac_cfg.command(name="setup-role", description="Set the role granted on roster submit")
+@_ac_cfg.checks.has_permissions(manage_roles=True)
+async def setup_role(interaction: discord.Interaction, role: discord.Role):
+    await set_auto_member_role_id(interaction.guild.id, role.id)
+    await interaction.response.send_message(f"Auto role set to {role.mention}.", ephemeral=True)
+
+@_ac_cfg.command(name="welcome-post", description="Post or refresh the Start Roster button message in the welcome channel")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
+async def welcome_post_cmd(interaction: discord.Interaction):
+    await ensure_welcome_prompt(interaction.guild)
+    ch_id = await get_welcome_channel_id(interaction.guild.id)
+    ch = interaction.guild.get_channel(ch_id) if ch_id else None
+    if ch:
+        await interaction.response.send_message(f"Welcome prompt ensured in {ch.mention}.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Welcome channel not set. Run /setup-welcome first.", ephemeral=True)
+
+@_ac_cfg.command(name="start-roster", description="Open the roster intake (ephemeral) in the welcome channel")
+async def start_roster_cmd(interaction: discord.Interaction):
+    gid = interaction.guild.id if interaction.guild else None
+    if not gid:
+        return await interaction.response.send_message("Guild not found.", ephemeral=True)
+    wcid = await get_welcome_channel_id(gid)
+    if not wcid:
+        return await interaction.response.send_message("Welcome channel not set. Run /setup-welcome first.", ephemeral=True)
+    if not isinstance(interaction.channel, discord.TextChannel) or interaction.channel.id != wcid:
+        ch = interaction.guild.get_channel(wcid)
+        return await interaction.response.send_message(f"Run this in {ch.mention}.", ephemeral=True)
+    view = RosterStartView()
+    await interaction.response.send_message("Let's get your roster set up.", ephemeral=True, view=view)
+
+@_ac_cfg.command(name="roster-repost", description="Repost a user's roster card to the roster channel")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
+async def roster_repost_cmd(interaction: discord.Interaction, member: discord.Member | None = None):
+    gid = interaction.guild.id if interaction.guild else None
+    if not gid:
+        return await interaction.response.send_message("Guild not found.", ephemeral=True)
+    user = member or interaction.user
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT main_name, main_level, main_class, alts_json, timezone_raw, timezone_norm FROM roster_members WHERE guild_id=? AND user_id=?", (gid, user.id))
+        row = await c.fetchone()
+    if not row:
+        return await interaction.response.send_message("No roster data found for that user.", ephemeral=True)
+    main_name, main_level, main_class, alts_json, tz_raw, tz_norm = row
+    try:
+        alts = json.loads(alts_json) if isinstance(alts_json, str) else (alts_json or [])
+    except Exception:
+        alts = []
+    rcid = await get_roster_channel_id(gid)
+    if not rcid:
+        return await interaction.response.send_message("Roster channel not set. Run /setup-roster first.", ephemeral=True)
+    ch = interaction.guild.get_channel(rcid)
+    if not ch or not can_send(ch):
+        return await interaction.response.send_message("I lack permission to post in the roster channel.", ephemeral=True)
+    e = _build_roster_embed(user, main_name, int(main_level), main_class, alts, tz_raw, tz_norm)
+    await ch.send(embed=e)
+    await interaction.response.send_message(f"Reposted in {ch.mention}.", ephemeral=True)
+
+@_ac_cfg.command(name="setup-uptime", description="Set heartbeat channel and interval in minutes (use 0 to disable)")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
+async def setup_uptime(interaction: discord.Interaction, channel: discord.TextChannel, minutes: int):
+    await _cfg_set_int(interaction.guild.id, "heartbeat_channel_id", channel.id)
+    await _cfg_set_int(interaction.guild.id, "uptime_minutes", max(0, int(minutes)))
+    await interaction.response.send_message(f"Heartbeat channel set to {channel.mention}; interval {minutes} minutes.", ephemeral=True)
+
+# Manual admin sync
+@_ac_cfg.command(name="sync-now", description="Force sync slash commands in this guild")
+@_ac_cfg.checks.has_permissions(administrator=True)
+async def sync_now(interaction: discord.Interaction):
+    try:
+        await bot.tree.sync(guild=interaction.guild)
+        await interaction.response.send_message("Synced.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Sync failed: {e}", ephemeral=True)
+
+# Binder
+@bot.listen("on_ready")
+async def __bind_config_commands_and_sync():
+    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime, sync_now]
+    for g in bot.guilds:
+        for cmd in cmds:
+            try:
+                bot.tree.add_command(cmd, guild=g)
+            except Exception:
+                pass
+        try:
+            await bot.tree.sync(guild=g)
+            log.info(f"[sync] Config commands synced for guild {g.id}")
+        except Exception as e:
+            log.warning(f"[sync] {g.id}: {e}")
+# ==================== END MINIMAL CONFIG COMMANDS ====================
+
+
+
+
 
 if __name__ == "__main__":
     asyncio.run(main())
