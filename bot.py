@@ -3296,20 +3296,20 @@ from discord import app_commands as __app_cmds
 async def __force_register_commands_on_ready():
     for g in bot.guilds:
         try:
-            # If the roster group isn't present for this guild, add it explicitly as a guild command.
-            existing = {cmd.name for cmd in bot.tree.get_commands(guild=g)}
-            if "roster" not in existing:
+            rg = globals().get("roster_group") or globals().get("_roster_group")
+            if rg:
                 try:
-                    bot.tree.add_command(roster_group, guild=g)
-                    log.info(f"[force-add] roster group added to guild {g.id}")
+                    bot.tree.add_command(rg, guild=g)
+                    log.info(f"[force-add] roster group bound to guild {g.id}")
                 except Exception as e:
-                    log.info(f"[force-add] roster already present on {g.id} or add failed: {e}")
+                    log.info(f"[force-add] roster may already be bound on {g.id} or add failed: {e}")
+            else:
+                log.info(f"[force-add] roster group not found in globals; skipping add on {g.id}")
             await bot.tree.sync(guild=g)
             log.info(f"[force-sync] synced guild {g.id}")
         except Exception as e:
             log.warning(f"[force-sync] {g.id}: {e}")
 
-# Simple health checks
 @bot.command(name="ping")
 async def _ping_prefix(ctx: commands.Context):
     await ctx.reply("pong", mention_author=False)
