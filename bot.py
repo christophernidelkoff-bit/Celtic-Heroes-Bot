@@ -3271,3 +3271,425 @@ async def _lm_on_ready():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# ==================== APPENDIX — Roster Intake + Panel Stability Patch ====================
+# This section appends functionality without removing prior features.
+# - Ephemeral, per-user roster intake with class dropdown and level 1–250.
+# - Public roster post + auto role grant on submit.
+# - Persistent "Start Roster" button in welcome channel.
+# - Panel regeneration patch: edit-in-place only with content hashing and single-writer lock.
+# - Minimal schema migrations to support the above.
+
+from typing import Optional as _Optional, Tuple as _Tuple, List as _List, Dict as _Dict, Any as _Any
+import json as _json
+import hashlib as _hashlib
+import asyncio as _asyncio
+
+try:
+    from discord import app_commands as _app_commands
+except Exception:  # pragma: no cover
+    pass
+
+# ---- Schema extensions ----
+async def _ensure_schema_extensions():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async def col_exists(table: str, col: str) -> bool:
+            c = await db.execute(f"PRAGMA table_info({table})")
+            cols = [r[1] for r in await c.fetchall()]
+            return col in cols
+
+        # guild_config additions
+        await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+        if not await col_exists("guild_config", "welcome_channel_id"):
+            await db.execute("ALTER TABLE guild_config ADD COLUMN welcome_channel_id INTEGER DEFAULT NULL")
+        if not await col_exists("guild_config", "roster_channel_id"):
+            await db.execute("ALTER TABLE guild_config ADD COLUMN roster_channel_id INTEGER DEFAULT NULL")
+        if not await col_exists("guild_config", "auto_member_role_id"):
+            await db.execute("ALTER TABLE guild_config ADD COLUMN auto_member_role_id INTEGER DEFAULT NULL")
+        if not await col_exists("guild_config", "welcome_message_id"):
+            await db.execute("ALTER TABLE guild_config ADD COLUMN welcome_message_id INTEGER DEFAULT NULL")
+
+        # subscription_panels additions
+        await db.execute("""CREATE TABLE IF NOT EXISTS subscription_panels (
+            guild_id INTEGER NOT NULL, category TEXT NOT NULL, message_id INTEGER NOT NULL,
+            channel_id INTEGER DEFAULT NULL, PRIMARY KEY (guild_id, category)
+        )""")
+        if not await col_exists("subscription_panels", "last_render_hash"):
+            await db.execute("ALTER TABLE subscription_panels ADD COLUMN last_render_hash TEXT DEFAULT NULL")
+        if not await col_exists("subscription_panels", "updated_at"):
+            await db.execute("ALTER TABLE subscription_panels ADD COLUMN updated_at INTEGER DEFAULT NULL")
+
+        # roster_members table
+        await db.execute("""CREATE TABLE IF NOT EXISTS roster_members (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            main_name TEXT NOT NULL,
+            main_level INTEGER NOT NULL,
+            main_class TEXT NOT NULL,
+            alts_json TEXT NOT NULL,
+            timezone_raw TEXT NOT NULL,
+            timezone_norm TEXT,
+            submitted_at INTEGER,
+            updated_at INTEGER,
+            PRIMARY KEY (guild_id, user_id)
+        )""")
+        await db.commit()
+
+# ---- Config helpers ----
+async def _cfg_get_int(gid: int, field: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(f"SELECT {field} FROM guild_config WHERE guild_id=?", (gid,))
+        r = await c.fetchone()
+        return int(r[0]) if r and r[0] is not None else None
+
+async def _cfg_set_int(gid: int, field: str, val: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            f"INSERT INTO guild_config (guild_id,{field}) VALUES (?,?) "
+            f"ON CONFLICT(guild_id) DO UPDATE SET {field}=excluded.{field}", (gid, int(val))
+        )
+        await db.commit()
+
+async def get_welcome_channel_id(gid: int): return await _cfg_get_int(gid, "welcome_channel_id")
+async def get_roster_channel_id(gid: int): return await _cfg_get_int(gid, "roster_channel_id")
+async def get_auto_member_role_id(gid: int): return await _cfg_get_int(gid, "auto_member_role_id")
+async def get_welcome_message_id(gid: int): return await _cfg_get_int(gid, "welcome_message_id")
+
+async def set_welcome_channel_id(gid: int, cid: int): await _cfg_set_int(gid, "welcome_channel_id", cid)
+async def set_roster_channel_id(gid: int, cid: int): await _cfg_set_int(gid, "roster_channel_id", cid)
+async def set_auto_member_role_id(gid: int, rid: int): await _cfg_set_int(gid, "auto_member_role_id", rid)
+async def set_welcome_message_id(gid: int, mid: int): await _cfg_set_int(gid, "welcome_message_id", mid)
+
+# ---- Roster intake ----
+_ALLOWED_CLASSES = ["Ranger", "Rogue", "Warrior", "Mage", "Druid"]
+
+def _norm_class(s: str) -> str:
+    s = (s or "").strip().title()
+    for c in _ALLOWED_CLASSES:
+        if s == c: return c
+    return _ALLOWED_CLASSES[0]
+
+def _parse_timezone(tz: str) -> _Tuple[str, str]:
+    raw = (tz or "").strip()
+    norm = ""
+    if "/" in raw and len(raw) <= 64:
+        norm = raw
+    else:
+        m = re.match(r"^(?:UTC)?\s*([+-]?)(\d{1,2})(?::?(\d{2}))?$", raw)
+        if m:
+            sign = -1 if m.group(1) == "-" else 1
+            hh = int(m.group(2)); mm = int(m.group(3) or 0)
+            if 0 <= hh <= 14 and 0 <= mm < 60:
+                norm = f"UTC{'-' if sign<0 else '+'}{hh:02d}:{mm:02d}"
+    return raw or "N/A", norm
+
+async def _upsert_roster(gid: int, uid: int, main_name: str, main_level: int, main_class: str, alts: list, tz_raw: str, tz_norm: str):
+    now = now_ts()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO roster_members (guild_id,user_id,main_name,main_level,main_class,alts_json,timezone_raw,timezone_norm,submitted_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(guild_id,user_id) DO UPDATE SET
+                 main_name=excluded.main_name,
+                 main_level=excluded.main_level,
+                 main_class=excluded.main_class,
+                 alts_json=excluded.alts_json,
+                 timezone_raw=excluded.timezone_raw,
+                 timezone_norm=excluded.timezone_norm,
+                 updated_at=excluded.updated_at
+            """,
+            (gid, uid, main_name, int(main_level), main_class, _json.dumps(alts), tz_raw, tz_norm, now, now)
+        )
+        await db.commit()
+
+def _build_roster_embed(member: discord.Member, main_name: str, main_level: int, main_class: str, alts: list, tz_raw: str, tz_norm: str):
+    title = f"New Member: {member.display_name}"
+    desc = (
+        f"**Main:** {main_name} • {main_level} • {main_class}\n"
+        f"**Alts:** " + (", ".join([f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in alts]) if alts else "N/A") + "\n"
+        f"**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+    )
+    e = discord.Embed(title=title, description=desc, color=discord.Color.blurple())
+    e.set_footer(text="Welcome!")
+    return e
+
+class ClassSelect(discord.ui.Select):
+    def __init__(self):
+        opts = [discord.SelectOption(label=c, value=c) for c in _ALLOWED_CLASSES]
+        super().__init__(placeholder="Select your main class", min_values=1, max_values=1, options=opts)
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_class = self.values[0]
+        await interaction.response.edit_message(content=f"Selected class: **{self.view.selected_class}**", view=self.view)
+
+class RosterStartView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.selected_class = None
+        self.add_item(ClassSelect())
+
+    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
+    async def _continue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_class:
+            return await interaction.response.send_message("Pick a class first.", ephemeral=True)
+        await interaction.response.send_modal(RosterModal(self.selected_class))
+
+class RosterModal(discord.ui.Modal, title="Start Roster"):
+    main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
+    main_level = discord.ui.TextInput(label="Main level (1–250)", placeholder="215", required=True, max_length=3)
+    alts = discord.ui.TextInput(label="Alts (name / level / class; or N/A)", style=discord.TextStyle.paragraph, required=True, default="N/A", max_length=400)
+    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
+
+    def __init__(self, selected_class: str):
+        super().__init__(timeout=600)
+        self.selected_class = selected_class
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Parse and validate
+        try:
+            lvl = int(str(self.main_level))
+        except Exception:
+            return await interaction.response.send_message("Level must be a number.", ephemeral=True)
+        if not (1 <= lvl <= 250):
+            return await interaction.response.send_message("Level must be between 1 and 250.", ephemeral=True)
+        main_name = str(self.main_name).strip()
+        cls = _norm_class(self.selected_class)
+        raw_alts = str(self.alts).strip()
+        alts: list = []
+        if raw_alts.lower() != "n/a":
+            chunks = re.split(r"[;\\n]+", raw_alts)
+            for ch in chunks:
+                parts = [p.strip() for p in ch.split("/") if p.strip()]
+                if len(parts) >= 3:
+                    nm, lv, cl = parts[0], parts[1], parts[2]
+                    try: lv = int(re.sub(r"[^0-9]", "", lv))
+                    except Exception: pass
+                    alts.append({"name": nm[:32], "level": lv, "class": _norm_class(cl)})
+        tz_raw, tz_norm = _parse_timezone(str(self.timezone))
+
+        summary = f"**Main:** {main_name} • {lvl} • {cls}\\n**Alts:** " + (", ".join([f"{a['name']} • {a['level']} • {a['class']}" for a in alts]) if alts else "N/A") + f"\\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        view = RosterConfirmView(main_name, lvl, cls, alts, tz_raw, tz_norm)
+        await interaction.response.send_message(f"Review your info:\\n{summary}", ephemeral=True, view=view)
+
+class RosterConfirmView(discord.ui.View):
+    def __init__(self, main_name: str, lvl: int, cls: str, alts: list, tz_raw: str, tz_norm: str):
+        super().__init__(timeout=600)
+        self.payload = (main_name, lvl, cls, alts, tz_raw, tz_norm)
+
+    @discord.ui.button(label="Join the server!", style=discord.ButtonStyle.success)
+    async def join_server(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild; user = interaction.user
+        if not guild:
+            return await interaction.response.send_message("Guild not found.", ephemeral=True)
+        gid = guild.id
+        # Save
+        try:
+            await _upsert_roster(gid, user.id, *self.payload)
+        except Exception as e:
+            log.warning(f"[roster] upsert failed: {e}")
+            return await interaction.response.send_message("Could not save your info.", ephemeral=True)
+        # Role
+        rid = await get_auto_member_role_id(gid)
+        if rid:
+            role = guild.get_role(rid)
+            if role:
+                try: await user.add_roles(role, reason="Roster intake complete")
+                except Exception as e: log.warning(f"[roster] role grant failed: {e}")
+        # Public post
+        roster_ch_id = await get_roster_channel_id(gid)
+        if roster_ch_id:
+            ch = guild.get_channel(roster_ch_id)
+            if can_send(ch):
+                try:
+                    e = _build_roster_embed(user, *self.payload)
+                    await ch.send(embed=e)
+                except Exception as e:
+                    log.warning(f"[roster] post failed: {e}")
+        await interaction.response.edit_message(content="You're set. Welcome.", view=None)
+
+class WelcomeRootView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Start Roster", style=discord.ButtonStyle.primary, custom_id="start_roster_btn")
+    async def start_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
+        v = RosterStartView()
+        await interaction.response.send_message("Let's get your roster set up.", ephemeral=True, view=v)
+
+async def _ensure_welcome_prompt(guild: discord.Guild):
+    gid = guild.id
+    ch_id = await get_welcome_channel_id(gid)
+    if not ch_id: return
+    ch = guild.get_channel(ch_id)
+    if not can_send(ch): return
+    view = WelcomeRootView()
+    content = "New here? Tap to start."
+    msg_id = await get_welcome_message_id(gid)
+    if msg_id:
+        try:
+            msg = await ch.fetch_message(msg_id)
+            try:
+                await msg.edit(content=content, view=view)
+                return
+            except Exception:
+                pass
+        except Exception:
+            pass
+    try:
+        msg = await ch.send(content, view=view)
+        await set_welcome_message_id(gid, msg.id)
+    except Exception as e:
+        log.warning(f"[welcome] ensure prompt failed for g{gid}: {e}")
+
+# ---- Slash admin commands ----
+_roster_group = app_commands.Group(name="roster", description="Roster configuration")
+
+@_roster_group.command(name="set-welcome", description="Set the channel for the Start Roster button")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def roster_set_welcome(interaction: discord.Interaction, channel: discord.TextChannel):
+    await set_welcome_channel_id(interaction.guild.id, channel.id)
+    await interaction.response.send_message(f"Welcome channel set to {channel.mention}.", ephemeral=True)
+    await _ensure_welcome_prompt(interaction.guild)
+
+@_roster_group.command(name="set-roster", description="Set the public roster channel")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def roster_set_roster(interaction: discord.Interaction, channel: discord.TextChannel):
+    await set_roster_channel_id(interaction.guild.id, channel.id)
+    await interaction.response.send_message(f"Roster channel set to {channel.mention}.", ephemeral=True)
+
+@_roster_group.command(name="set-role", description="Set the role granted on roster submit")
+@app_commands.checks.has_permissions(manage_roles=True)
+async def roster_set_role(interaction: discord.Interaction, role: discord.Role):
+    await set_auto_member_role_id(interaction.guild.id, role.id)
+    await interaction.response.send_message(f"Auto role set to {role.mention}.", ephemeral=True)
+
+@_roster_group.command(name="test", description="Post or refresh the Start Roster prompt")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def roster_test(interaction: discord.Interaction):
+    await _ensure_welcome_prompt(interaction.guild)
+    await interaction.response.send_message("Welcome prompt ensured.", ephemeral=True)
+
+try:
+    bot.tree.add_command(_roster_group)
+except Exception:
+    pass
+
+# Ensure migrations + prompt on ready (listener so we don't override existing on_ready)
+@bot.listen("on_ready")
+async def _appendix_ready_hook():
+    try:
+        await _ensure_schema_extensions()
+    except Exception as e:
+        log.warning(f"[migrate] _ensure_schema_extensions failed: {e}")
+    for g in bot.guilds:
+        try:
+            await _ensure_welcome_prompt(g)
+        except Exception as e:
+            log.warning(f"[welcome] ensure prompt failed for g{g.id}: {e}")
+
+# ---- Panel stability patch ----
+_panel_refresh_locks: Dict[int, _asyncio.Lock] = {}
+
+def _hash_panel(_content: str, _embed: Optional[discord.Embed]) -> str:
+    h = _hashlib.sha256()
+    h.update((_content or "").encode("utf-8"))
+    if _embed:
+        try:
+            h.update(_json.dumps(_embed.to_dict(), sort_keys=True).encode("utf-8"))
+        except Exception:
+            pass
+    return h.hexdigest()
+
+async def _get_panel_last_hash(gid: int, cat: str) -> _Optional[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT last_render_hash FROM subscription_panels WHERE guild_id=? AND category=?", (gid, norm_cat(cat)))
+        r = await c.fetchone()
+        return r[0] if r and r[0] else None
+
+async def _set_panel_record_hash(gid: int, cat: str, message_id: int, channel_id: _Optional[int], h: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO subscription_panels (guild_id,category,message_id,channel_id,last_render_hash,updated_at) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(guild_id,category) DO UPDATE SET message_id=excluded.message_id, channel_id=excluded.channel_id, last_render_hash=excluded.last_render_hash, updated_at=excluded.updated_at",
+            (gid, norm_cat(cat), int(message_id), (int(channel_id) if channel_id else None), h, now_ts())
+        )
+        await db.commit()
+
+# Override: edit-in-place only with hashing and a single writer per guild
+async def refresh_subscription_messages(guild: discord.Guild):  # type: ignore[override]
+    gid = guild.id
+    lock = _panel_refresh_locks.get(gid)
+    if lock is None:
+        lock = _panel_refresh_locks[gid] = _asyncio.Lock()
+    async with lock:
+        sub_ch_id = await get_subchannel_id(gid)
+        if not sub_ch_id:
+            return
+        channel = guild.get_channel(sub_ch_id)
+        if not can_send(channel):
+            return
+
+        # existing map
+        async with aiosqlite.connect(DB_PATH) as db:
+            c = await db.execute("SELECT category, message_id, channel_id FROM subscription_panels WHERE guild_id=?", (gid,))
+            panel_map = {norm_cat(row[0]): (int(row[1]), (int(row[2]) if row[2] is not None else None)) for row in await c.fetchall()}
+
+        for cat in CATEGORY_ORDER:
+            # skip empty categories
+            async with aiosqlite.connect(DB_PATH) as db:
+                c = await db.execute("SELECT COUNT(*) FROM bosses WHERE guild_id=? AND category=?", (gid, cat))
+                count = (await c.fetchone())[0]
+            if count == 0:
+                continue
+
+            content, embed, emojis = await build_subscription_embed_for_category(gid, cat)
+            if not embed:
+                continue
+            new_hash = _hash_panel(content, embed)
+
+            existing_id, existing_ch = panel_map.get(cat, (None, None))
+            if existing_id and existing_ch and existing_ch != sub_ch_id:
+                # delete misplaced message
+                old_ch = guild.get_channel(existing_ch)
+                if old_ch and can_send(old_ch):
+                    try:
+                        old_msg = await old_ch.fetch_message(existing_id)
+                        await old_msg.delete()
+                    except Exception:
+                        pass
+                existing_id = None
+
+            if existing_id:
+                last_h = await _get_panel_last_hash(gid, cat)
+                if last_h == new_hash:
+                    continue  # unchanged
+                try:
+                    msg = await channel.fetch_message(existing_id)
+                    await msg.edit(content=content, embed=embed)
+                    await _set_panel_record_hash(gid, cat, msg.id, channel.id, new_hash)
+                except Exception:
+                    # recreate once
+                    try:
+                        msg = await channel.send(content=content, embed=embed)
+                        await _set_panel_record_hash(gid, cat, msg.id, channel.id, new_hash)
+                    except Exception as e:
+                        log.warning(f"[panels] recreate failed ({cat}): {e}")
+                        continue
+            else:
+                try:
+                    msg = await channel.send(content=content, embed=embed)
+                    await _set_panel_record_hash(gid, cat, msg.id, channel.id, new_hash)
+                except Exception as e:
+                    log.warning(f"[panels] create failed ({cat}): {e}")
+                    continue
+
+            # add missing reactions only
+            try:
+                mobj = await channel.fetch_message(existing_id or msg.id)
+                existing_reacts = set(str(r.emoji) for r in mobj.reactions)
+                for e in [e for e in emojis if e not in existing_reacts]:
+                    if can_react(channel):
+                        await mobj.add_reaction(e)
+                        await _asyncio.sleep(0.2)
+            except Exception as e:
+                log.warning(f"[panels] add reactions failed ({cat}): {e}")
+# ==================== END APPENDIX ====================
