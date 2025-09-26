@@ -3758,6 +3758,171 @@ class RosterConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="You're set. Welcome.", view=None)
 # ==================== END ROSTER INTAKE UI ====================
 
+# ==================== OVERRIDES: ALT FLOW + PERMISSION GATE ====================
+# Alt flow identical to mains: class dropdown then modal with name+level.
+# The alt fields are optional; main fields remain required.
+import json as __json2
+import re as __re2
+
+class AltClassSelect(discord.ui.Select):
+    def __init__(self):
+        opts = [discord.SelectOption(label=c, value=c) for c in ["Ranger","Rogue","Warrior","Mage","Druid"]]
+        super().__init__(placeholder="Select alt class", min_values=1, max_values=1, options=opts)
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_alt_class = self.values[0]
+        await interaction.response.edit_message(content=self.view._summary_text(), view=self.view)
+
+class AltModal(discord.ui.Modal, title="Add Alt"):
+    alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
+    alt_level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3, placeholder="e.g., 120")
+
+    def __init__(self, parent_view: "RosterConfirmView"):
+        super().__init__(timeout=300)
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        name = str(self.alt_name).strip()
+        lvl = str(self.alt_level).strip()
+        lvl_int = None
+        if lvl:
+            try:
+                lvl_int = int(__re2.sub(r"[^0-9]", "", lvl))
+            except Exception:
+                lvl_int = None
+        if lvl_int is not None and not (1 <= lvl_int <= 250):
+            return await interaction.response.send_message("Alt level must be between 1 and 250.", ephemeral=True)
+        cls = self.parent_view.selected_alt_class or "Ranger"
+        alt = {}
+        if name: alt["name"] = name[:32]
+        if lvl_int is not None: alt["level"] = lvl_int
+        alt["class"] = cls
+        # If user provided nothing, do not append
+        if not name and lvl_int is None:
+            return await interaction.response.send_message(self.parent_view._summary_text(), ephemeral=True, view=self.parent_view)
+        mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
+        new_alts = list(alts or []) + [alt]
+        new_view = RosterConfirmView(mname, mlvl, mcls, new_alts, tz_raw, tz_norm)
+        await interaction.response.send_message(new_view._summary_text(), ephemeral=True, view=new_view)
+
+# Override RosterConfirmView to include alt class dropdown and Add Alt button
+class RosterConfirmView(discord.ui.View):
+    def __init__(self, main_name: str, lvl: int, cls: str, alts: list, tz_raw: str, tz_norm: str):
+        super().__init__(timeout=900)
+        self.payload = (main_name, lvl, cls, alts or [], tz_raw, tz_norm)
+        self.selected_alt_class = None
+        self.add_item(AltClassSelect())
+
+    def _summary_text(self) -> str:
+        mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
+        try:
+            alts_line = ", ".join(f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in (alts or [])) or "N/A"
+        except Exception:
+            alts_line = "N/A"
+        return f"Review your info:\n**Main:** {mname} • {mlvl} • {mcls}\n**Alts:** {alts_line}\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+
+    @discord.ui.button(label="Add Alt", style=discord.ButtonStyle.secondary)
+    async def add_alt(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_alt_class:
+            return await interaction.response.send_message("Pick an alt class from the dropdown first.", ephemeral=True)
+        await interaction.response.send_modal(AltModal(self))
+
+    @discord.ui.button(label="Join the server!", style=discord.ButtonStyle.success)
+    async def join_server(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild; user = interaction.user
+        if not guild:
+            return await interaction.response.send_message("Guild not found.", ephemeral=True)
+        gid = guild.id
+        try:
+            await _upsert_roster(gid, user.id, *self.payload)
+        except Exception as e:
+            log.warning(f"[roster] upsert failed: {e}")
+            return await interaction.response.send_message("Could not save your info.", ephemeral=True)
+        rid = await get_auto_member_role_id(gid)
+        if rid:
+            role = guild.get_role(rid)
+            if role:
+                try: await user.add_roles(role, reason="Roster intake complete")
+                except Exception as e: log.warning(f"[roster] role grant failed: {e}")
+        roster_ch_id = await get_roster_channel_id(gid)
+        if roster_ch_id:
+            ch = guild.get_channel(roster_ch_id)
+            if can_send(ch):
+                try:
+                    e = _build_roster_embed(user, *self.payload)
+                    await ch.send(embed=e)
+                except Exception as e:
+                    log.warning(f"[roster] post failed: {e}")
+        await interaction.response.edit_message(content="You're set. Welcome.", view=None)
+
+# Global slash permission gate
+async def _get_timers_role_id(gid: int):
+    try:
+        return await _cfg_get_int(gid, "timers_role_id")
+    except Exception:
+        return None
+
+@bot.tree.check
+async def __global_slash_permission_gate(interaction: discord.Interaction):
+    # Admin bypass
+    if interaction.user.guild_permissions.administrator:
+        return True
+    # Timers commands: require role if configured
+    qn = interaction.command.qualified_name if interaction.command else ""
+    gid = interaction.guild.id if interaction.guild else None
+    if qn.startswith("timers") and gid:
+        rid = await _get_timers_role_id(gid)
+        if rid:
+            role = interaction.guild.get_role(int(rid))
+            if role and role in getattr(interaction.user, "roles", []):
+                return True
+            raise app_commands.CheckFailure("Missing the required timers role.")
+        # If no role configured, allow only Manage Messages
+        if interaction.user.guild_permissions.manage_messages:
+            return True
+        raise app_commands.CheckFailure("Timers role not configured. Ask an admin to set it with /setup-timersrole.")
+    # All other slash commands require Manage Messages
+    if interaction.user.guild_permissions.manage_messages:
+        return True
+    raise app_commands.CheckFailure("You need Manage Messages to use this command.")
+
+# Error handler to show clean messages
+@bot.tree.error
+async def __on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        msg = str(error)
+        await interaction.response.send_message(msg or "Permission denied.", ephemeral=True)
+    except Exception:
+        try:
+            await interaction.followup.send(msg or "Permission denied.", ephemeral=True)
+        except Exception:
+            pass
+
+# Config command to set timers role
+from discord import app_commands as __ac_perm
+@__ac_perm.command(name="setup-timersrole", description="Set the role allowed to use /timers commands")
+@__ac_perm.checks.has_permissions(manage_guild=True)
+async def setup_timersrole(interaction: discord.Interaction, role: discord.Role):
+    await _cfg_set_int(interaction.guild.id, "timers_role_id", role.id)
+    await interaction.response.send_message(f"Timers role set to {role.mention}.", ephemeral=True)
+
+# Bind new command per guild and sync
+@bot.listen("on_ready")
+async def __bind_perm_setup_and_sync():
+    cmds = [setup_timersrole]
+    for g in bot.guilds:
+        for cmd in cmds:
+            try:
+                bot.tree.add_command(cmd, guild=g)
+            except Exception:
+                pass
+        try:
+            await bot.tree.sync(guild=g)
+            log.info(f"[sync] Permission setup commands synced for guild {g.id}")
+        except Exception as e:
+            log.warning(f"[sync] {g.id}: {e}")
+# ==================== END OVERRIDES ====================
+
+
 
 
 
