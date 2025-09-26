@@ -3269,6 +3269,26 @@ async def _lm_on_ready():
         log.warning(f"Lix/Market init failed: {e}")
 # ------------------ End Lixing & Market Add-on ------------------
 
+# -------------------- Slash command sync helpers --------------------
+@bot.listen("on_ready")
+async def _slash_sync_on_ready():
+    for g in bot.guilds:
+        try:
+            await bot.tree.sync(guild=g)
+            log.info(f"[sync] Slash commands synced for guild {g.id}")
+        except Exception as e:
+            log.warning(f"[sync] {g.id}: {e}")
+
+@bot.command(name="sync")
+@commands.has_permissions(administrator=True)
+async def _sync(ctx: commands.Context):
+    try:
+        await bot.tree.sync(guild=ctx.guild)
+        await ctx.reply("Slash commands synced.", mention_author=False)
+    except Exception as e:
+        await ctx.reply(f"Sync failed: {e}", mention_author=False)
+
+
 if __name__ == "__main__":
     asyncio.run(main())
 
