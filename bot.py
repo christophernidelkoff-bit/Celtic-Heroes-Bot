@@ -3937,6 +3937,8 @@ async def _global_slash_permission_gate(interaction: discord.Interaction):
     qn = (interaction.command.qualified_name if interaction.command else "") or ""
     gid = interaction.guild.id
     # Timers commands: role only
+    if qn in ("my-level-main", "my-level-alt"):
+        return True
     if qn.startswith("timers"):
         rid = await _get_timers_role_id(gid)
         if not rid:
@@ -3996,21 +3998,19 @@ async def _cfg_set_text(gid: int, field: str, val: str | None):
         ); await db.commit()
 
 # Decorate embed with stars: uses configured GIF when available; falls back to unicode sparkles
+
 async def decorate_embed_with_stars(e: discord.Embed, guild_id: int):
+    gif = None
     try:
         gif = await _cfg_get_text(guild_id, "roster_star_gif")
     except Exception:
         gif = None
-    if isinstance(gif, str) and gif.startswith("http"):
-        try:
-            e.set_thumbnail(url=gif)     # top-right
-            e.set_author(name="\u200b", icon_url=gif)  # top-left
-        except Exception:
-            pass
-    # Always add unicode sparkles in the title for clarity
     try:
-        if e.title:
-            e.title = f"✨ {e.title} ✨"
+        if isinstance(gif, str) and _is_valid_http_url(gif):
+            try:
+                e.set_thumbnail(url=gif)
+            except Exception:
+                pass
     except Exception:
         pass
     return e
@@ -4231,22 +4231,19 @@ for cls in list(globals().values()):
         break
 
 # Harden star decoration: validate URL before applying. If invalid, skip images.
+
 async def decorate_embed_with_stars(e: discord.Embed, guild_id: int):
     gif = None
     try:
         gif = await _cfg_get_text(guild_id, "roster_star_gif")
     except Exception:
         gif = None
-    if isinstance(gif, str) and _is_valid_http_url(gif):
-        try:
-            e.set_thumbnail(url=gif)     # top-right
-            e.set_author(name=" ", icon_url=gif)  # top-left (author requires name)
-        except Exception:
-            pass
-    # Always add unicode sparkles in the title
     try:
-        if e.title and not e.title.startswith("✨"):
-            e.title = f"✨ {e.title} ✨"
+        if isinstance(gif, str) and _is_valid_http_url(gif):
+            try:
+                e.set_thumbnail(url=gif)
+            except Exception:
+                pass
     except Exception:
         pass
     return e
@@ -4278,6 +4275,146 @@ async def __bind_setup_stargif_once():
     except Exception:
         pass
 # ==================== END CLEAN ALT FLOW + SAFE STAR GIF ====================
+
+# ===== Roster message id migration =====
+async def _ensure_roster_msg_id_column():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS roster_members (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            main_name TEXT NOT NULL,
+            main_level INTEGER NOT NULL,
+            main_class TEXT NOT NULL,
+            alts_json TEXT NOT NULL,
+            timezone_raw TEXT NOT NULL,
+            timezone_norm TEXT,
+            submitted_at INTEGER,
+            updated_at INTEGER,
+            PRIMARY KEY (guild_id, user_id)
+        )""")
+        c = await db.execute("PRAGMA table_info(roster_members)")
+        cols = {row[1] for row in await c.fetchall()}
+        if "roster_msg_id" not in cols:
+            await db.execute("ALTER TABLE roster_members ADD COLUMN roster_msg_id INTEGER DEFAULT NULL")
+        await db.commit()
+
+@bot.listen("on_ready")
+async def __migrate_roster_msg_id_col():
+    try:
+        await _ensure_roster_msg_id_column()
+    except Exception as e:
+        try: log.warning(f"[migrate] roster_msg_id: {e}")
+        except Exception: pass
+# ======================================
+
+# ===== Roster row helpers + embed edit =====
+async def _roster_load(gid: int, uid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT main_name, main_level, main_class, alts_json, timezone_raw, timezone_norm, roster_msg_id FROM roster_members WHERE guild_id=? AND user_id=?", (gid, uid))
+        return await c.fetchone()
+
+async def _roster_save_embed_message_id(gid: int, uid: int, msg_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE roster_members SET roster_msg_id=? WHERE guild_id=? AND user_id=?", (int(msg_id), gid, uid))
+        await db.commit()
+
+async def _roster_edit_or_post(guild: discord.Guild, member: discord.Member, row):
+    main_name, main_level, main_class, alts_json, tz_raw, tz_norm, roster_msg_id = row
+    try:
+        alts = json.loads(alts_json) if isinstance(alts_json, str) else (alts_json or [])
+    except Exception:
+        alts = []
+    e = _build_roster_embed(member, main_name, int(main_level), main_class, alts, tz_raw, tz_norm)
+    await decorate_embed_with_stars(e, guild.id)
+    rcid = await get_roster_channel_id(guild.id)
+    ch = guild.get_channel(rcid) if rcid else None
+    if not ch or not can_send(ch):
+        raise RuntimeError("Roster channel not configured or no permission.")
+    if roster_msg_id:
+        try:
+            msg = await ch.fetch_message(int(roster_msg_id))
+            await msg.edit(embed=e)
+            return msg
+        except Exception:
+            pass
+    # Post new and store id
+    msg = await ch.send(embed=e)
+    await _roster_save_embed_message_id(guild.id, member.id, msg.id)
+    return msg
+# ===========================================
+
+# ===== Player self-service level updates =====
+from discord import app_commands as _ac_levels
+
+@_ac_levels.command(name="my-level-main", description="Update your main level (1–250) without reposting")
+async def my_level_main(interaction: discord.Interaction, level: int):
+    if not interaction.guild:
+        return await interaction.response.send_message("Guild only.", ephemeral=True)
+    if not (1 <= level <= 250):
+        return await interaction.response.send_message("Level must be 1–250.", ephemeral=True)
+    gid = interaction.guild.id; uid = interaction.user.id
+    row = await _roster_load(gid, uid)
+    if not row:
+        return await interaction.response.send_message("No roster on file. Use the welcome intake first.", ephemeral=True)
+    main_name, main_level, main_class, alts_json, tz_raw, tz_norm, roster_msg_id = row
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE roster_members SET main_level=?, updated_at=? WHERE guild_id=? AND user_id=?", (int(level), now_ts(), gid, uid))
+        await db.commit()
+    row = (main_name, int(level), main_class, alts_json, tz_raw, tz_norm, roster_msg_id)
+    try:
+        await _roster_edit_or_post(interaction.guild, interaction.user, row)
+        await interaction.response.send_message(f"Main level updated to {level}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Saved. Could not update the roster message: {e}", ephemeral=True)
+
+@_ac_levels.command(name="my-level-alt", description="Update one alt level by slot number (1..N)")
+async def my_level_alt(interaction: discord.Interaction, slot: int, level: int):
+    if not interaction.guild:
+        return await interaction.response.send_message("Guild only.", ephemeral=True)
+    if not (1 <= level <= 250):
+        return await interaction.response.send_message("Level must be 1–250.", ephemeral=True)
+    if slot < 1:
+        return await interaction.response.send_message("Slot must be 1 or greater.", ephemeral=True)
+    gid = interaction.guild.id; uid = interaction.user.id
+    row = await _roster_load(gid, uid)
+    if not row:
+        return await interaction.response.send_message("No roster on file. Use the welcome intake first.", ephemeral=True)
+    main_name, main_level, main_class, alts_json, tz_raw, tz_norm, roster_msg_id = row
+    try:
+        alts = json.loads(alts_json) if isinstance(alts_json, str) else (alts_json or [])
+    except Exception:
+        alts = []
+    if slot > len(alts):
+        return await interaction.response.send_message(f"You only have {len(alts)} alts saved.", ephemeral=True)
+    # Update
+    alts[slot-1]["level"] = int(level)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE roster_members SET alts_json=?, updated_at=? WHERE guild_id=? AND user_id=?", (json.dumps(alts), now_ts(), gid, uid))
+        await db.commit()
+    row = (main_name, main_level, main_class, json.dumps(alts), tz_raw, tz_norm, roster_msg_id)
+    try:
+        await _roster_edit_or_post(interaction.guild, interaction.user, row)
+        await interaction.response.send_message(f"Alt #{slot} level updated to {level}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Saved. Could not update the roster message: {e}", ephemeral=True)
+
+# Bind and sync
+@bot.listen("on_ready")
+async def __bind_player_level_cmds():
+    for g in bot.guilds:
+        for cmd in (my_level_main, my_level_alt):
+            try:
+                bot.tree.add_command(cmd, guild=g)
+            except Exception:
+                pass
+        try:
+            await bot.tree.sync(guild=g)
+        except Exception:
+            pass
+# ===========================================
+
+
+
 
 
 
