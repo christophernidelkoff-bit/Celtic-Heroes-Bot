@@ -3288,35 +3288,121 @@ async def _sync(ctx: commands.Context):
     except Exception as e:
         await ctx.reply(f"Sync failed: {e}", mention_author=False)
 
-# -------------------- Diagnostics & Force Registration --------------------
-# Adds /ping and !ping. Force-adds the roster group per guild before syncing.
-from discord import app_commands as __app_cmds
+# ==================== COMMAND GROUP REGISTRATION (robust) ====================
+# Ensures /roster and /config groups exist and are added before syncing.
+from discord import app_commands as _ac
 
+async def _cfg_set_prefix(gid: int, prefix: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO guild_config (guild_id,prefix) VALUES (?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET prefix=excluded.prefix",
+            (gid, prefix)
+        ); await db.commit()
+
+async def _cfg_set_bool(gid: int, field: str, val: bool):
+    await _cfg_set_int(gid, field, 1 if bool(val) else 0)
+
+def _ensure_roster_and_config_groups():
+    # Roster group: use existing if available else define a fresh one
+    rg = globals().get("roster_group") or globals().get("_roster_group")
+    if not rg:
+        rg = _ac.Group(name="roster", description="Roster configuration")
+        @rg.command(name="set-welcome", description="Set the channel for the Start Roster button")
+        @_ac.checks.has_permissions(manage_guild=True)
+        async def roster_set_welcome(interaction: discord.Interaction, channel: discord.TextChannel):
+            await set_welcome_channel_id(interaction.guild.id, channel.id)
+            await interaction.response.send_message(f"Welcome channel set to {channel.mention}.", ephemeral=True)
+            await _ensure_welcome_prompt(interaction.guild)
+        @rg.command(name="set-roster", description="Set the public roster channel")
+        @_ac.checks.has_permissions(manage_guild=True)
+        async def roster_set_roster(interaction: discord.Interaction, channel: discord.TextChannel):
+            await set_roster_channel_id(interaction.guild.id, channel.id)
+            await interaction.response.send_message(f"Roster channel set to {channel.mention}.", ephemeral=True)
+        @rg.command(name="set-role", description="Set the role granted on roster submit")
+        @_ac.checks.has_permissions(manage_roles=True)
+        async def roster_set_role(interaction: discord.Interaction, role: discord.Role):
+            await set_auto_member_role_id(interaction.guild.id, role.id)
+            await interaction.response.send_message(f"Auto role set to {role.mention}.", ephemeral=True)
+        @rg.command(name="test", description="Post or refresh the Start Roster prompt")
+        @_ac.checks.has_permissions(manage_guild=True)
+        async def roster_test(interaction: discord.Interaction):
+            await _ensure_welcome_prompt(interaction.guild)
+            await interaction.response.send_message("Welcome prompt ensured.", ephemeral=True)
+        globals()["roster_group"] = rg  # expose for other code
+
+    # Config group for general bot settings
+    cg = globals().get("config_group")
+    if not cg:
+        cg = _ac.Group(name="config", description="Bot configuration")
+        @_ac.checks.has_permissions(manage_guild=True)
+        @cg.command(name="set-default", description="Set default channel for bot announcements")
+        async def cfg_set_default(interaction: discord.Interaction, channel: discord.TextChannel):
+            await _cfg_set_int(interaction.guild.id, "default_channel", channel.id)
+            await interaction.response.send_message(f"Default channel set to {channel.mention}.", ephemeral=True)
+
+        @_ac.checks.has_permissions(manage_guild=True)
+        @cg.command(name="set-sub", description="Set subscription panels channel")
+        async def cfg_set_sub(interaction: discord.Interaction, channel: discord.TextChannel):
+            await _cfg_set_int(interaction.guild.id, "sub_channel_id", channel.id)
+            await interaction.response.send_message(f"Subscription channel set to {channel.mention}.", ephemeral=True)
+
+        @_ac.checks.has_permissions(manage_guild=True)
+        @cg.command(name="set-subping", description="Set subscriber ping channel")
+        async def cfg_set_subping(interaction: discord.Interaction, channel: discord.TextChannel):
+            await _cfg_set_int(interaction.guild.id, "sub_ping_channel_id", channel.id)
+            await interaction.response.send_message(f"Subscriber ping channel set to {channel.mention}.", ephemeral=True)
+
+        @_ac.checks.has_permissions(manage_guild=True)
+        @cg.command(name="set-heartbeat", description="Set heartbeat channel")
+        async def cfg_set_heartbeat(interaction: discord.Interaction, channel: discord.TextChannel):
+            await _cfg_set_int(interaction.guild.id, "heartbeat_channel_id", channel.id)
+            await interaction.response.send_message(f"Heartbeat channel set to {channel.mention}.", ephemeral=True)
+
+        @_ac.checks.has_permissions(manage_guild=True)
+        @cg.command(name="set-prefix", description="Set text prefix for prefix commands")
+        async def cfg_set_prefix(interaction: discord.Interaction, prefix: str):
+            await _cfg_set_prefix(interaction.guild.id, prefix)
+            await interaction.response.send_message(f"Prefix set to `{prefix}`.", ephemeral=True)
+
+        @_ac.checks.has_permissions(manage_guild=True)
+        @cg.command(name="set-uptime", description="Set default uptime minutes for timers")
+        async def cfg_set_uptime(interaction: discord.Interaction, minutes: int):
+            await _cfg_set_int(interaction.guild.id, "uptime_minutes", minutes)
+            await interaction.response.send_message(f"Default uptime set to {minutes} minutes.", ephemeral=True)
+
+        @_ac.checks.has_permissions(manage_guild=True)
+        @cg.command(name="set-show-eta", description="Toggle ETA line in /timers embeds")
+        async def cfg_set_show_eta(interaction: discord.Interaction, show: bool):
+            await _cfg_set_bool(interaction.guild.id, "show_eta", show)
+            await interaction.response.send_message(f"Show ETA is now {'on' if show else 'off'}.", ephemeral=True)
+
+        globals()["config_group"] = cg
+
+    # Attach to the tree globally (one time)
+    try:
+        bot.tree.add_command(rg)
+    except Exception:
+        pass
+    try:
+        bot.tree.add_command(cg)
+    except Exception:
+        pass
+
+# Ensure registration before syncing
 @bot.listen("on_ready")
-async def __force_register_commands_on_ready():
+async def __ensure_groups_then_sync():
+    try:
+        _ensure_roster_and_config_groups()
+    except Exception as e:
+        log.warning(f"[ensure-groups] failed: {e}")
     for g in bot.guilds:
         try:
-            rg = globals().get("roster_group") or globals().get("_roster_group")
-            if rg:
-                try:
-                    bot.tree.add_command(rg, guild=g)
-                    log.info(f"[force-add] roster group bound to guild {g.id}")
-                except Exception as e:
-                    log.info(f"[force-add] roster may already be bound on {g.id} or add failed: {e}")
-            else:
-                log.info(f"[force-add] roster group not found in globals; skipping add on {g.id}")
             await bot.tree.sync(guild=g)
-            log.info(f"[force-sync] synced guild {g.id}")
+            log.info(f"[sync] Slash commands synced for guild {g.id}")
         except Exception as e:
-            log.warning(f"[force-sync] {g.id}: {e}")
-
-@bot.command(name="ping")
-async def _ping_prefix(ctx: commands.Context):
-    await ctx.reply("pong", mention_author=False)
-
-@__app_cmds.command(name="ping", description="Health check")
-async def _ping_slash(interaction: discord.Interaction):
-    await interaction.response.send_message("pong", ephemeral=True)
+            log.warning(f"[sync] {g.id}: {e}")
+# ==================== END COMMAND GROUP REGISTRATION ====================
 
 
 
