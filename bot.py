@@ -3269,66 +3269,175 @@ async def _lm_on_ready():
         log.warning(f"Lix/Market init failed: {e}")
 # ------------------ End Lixing & Market Add-on ------------------
 
-# ==================== CONFIG HELPERS + SCHEMA (for setup commands) ====================
-async def _cfg_get_int(gid: int, field: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        c = await db.execute(f"SELECT {field} FROM guild_config WHERE guild_id=?", (gid,))
-        r = await c.fetchone()
-        return int(r[0]) if r and r[0] is not None else None
+# ==================== ROSTER INTAKE UI ====================
+_ALLOWED_CLASSES = ["Ranger", "Rogue", "Warrior", "Mage", "Druid"]
 
-async def _cfg_set_int(gid: int, field: str, val: int):
+def _norm_class(s: str) -> str:
+    s = (s or "").strip().title()
+    for c in _ALLOWED_CLASSES:
+        if s == c: return c
+    return _ALLOWED_CLASSES[0]
+
+def _parse_timezone(tz: str):
+    raw = (tz or "").strip()
+    norm = ""
+    if "/" in raw and len(raw) <= 64:
+        norm = raw
+    else:
+        m = re.match(r"^(?:UTC)?\s*([+-]?)(\d{1,2})(?::?(\d{2}))?$", raw)
+        if m:
+            sign = -1 if m.group(1) == "-" else 1
+            hh = int(m.group(2)); mm = int(m.group(3) or 0)
+            if 0 <= hh <= 14 and 0 <= mm < 60:
+                norm = f"UTC{'-' if sign<0 else '+'}{hh:02d}:{mm:02d}"
+    return raw or "N/A", norm
+
+async def _upsert_roster(gid: int, uid: int, main_name: str, main_level: int, main_class: str, alts: list, tz_raw: str, tz_norm: str):
+    now = now_ts()
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
-        c = await db.execute("PRAGMA table_info(guild_config)")
-        cols = {row[1] for row in await c.fetchall()}
-        if field not in cols:
-            coltype = "TEXT" if field == "prefix" else "INTEGER"
-            await db.execute(f"ALTER TABLE guild_config ADD COLUMN {field} {coltype} DEFAULT NULL")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS roster_members (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                main_name TEXT NOT NULL,
+                main_level INTEGER NOT NULL,
+                main_class TEXT NOT NULL,
+                alts_json TEXT NOT NULL,
+                timezone_raw TEXT NOT NULL,
+                timezone_norm TEXT,
+                submitted_at INTEGER,
+                updated_at INTEGER,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
         await db.execute(
-            f"INSERT INTO guild_config (guild_id,{field}) VALUES (?,?) "
-            f"ON CONFLICT(guild_id) DO UPDATE SET {field}=excluded.{field}",
-            (gid, val)
+            """INSERT INTO roster_members (guild_id,user_id,main_name,main_level,main_class,alts_json,timezone_raw,timezone_norm,submitted_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(guild_id,user_id) DO UPDATE SET
+                 main_name=excluded.main_name,
+                 main_level=excluded.main_level,
+                 main_class=excluded.main_class,
+                 alts_json=excluded.alts_json,
+                 timezone_raw=excluded.timezone_raw,
+                 timezone_norm=excluded.timezone_norm,
+                 updated_at=excluded.updated_at
+            """,
+            (gid, uid, main_name, int(main_level), main_class, json.dumps(alts), tz_raw, tz_norm, now, now)
         ); await db.commit()
 
-async def get_welcome_channel_id(gid: int): return await _cfg_get_int(gid, "welcome_channel_id")
-async def set_welcome_channel_id(gid: int, cid: int): return await _cfg_set_int(gid, "welcome_channel_id", int(cid))
-async def get_roster_channel_id(gid: int): return await _cfg_get_int(gid, "roster_channel_id")
-async def set_roster_channel_id(gid: int, cid: int): return await _cfg_set_int(gid, "roster_channel_id", int(cid))
-async def get_auto_member_role_id(gid: int): return await _cfg_get_int(gid, "auto_member_role_id")
-async def set_auto_member_role_id(gid: int, rid: int): return await _cfg_set_int(gid, "auto_member_role_id", int(rid))
-async def get_welcome_message_id(gid: int): return await _cfg_get_int(gid, "welcome_message_id")
-async def set_welcome_message_id(gid: int, mid: int): return await _cfg_set_int(gid, "welcome_message_id", int(mid))
+def _build_roster_embed(member: discord.Member, main_name: str, main_level: int, main_class: str, alts: list, tz_raw: str, tz_norm: str):
+    title = f"New Member: {member.display_name}"
+    desc = (
+        f"**Main:** {main_name} • {main_level} • {main_class}\n"
+        f"**Alts:** " + (", ".join([f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in alts]) if alts else "N/A") + "\n"
+        f"**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+    )
+    e = discord.Embed(title=title, description=desc, color=discord.Color.blurple())
+    e.set_footer(text="Welcome!")
+    return e
 
-@bot.listen("on_ready")
-async def __ensure_setup_columns_on_ready():
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
-            needed = ["welcome_channel_id","roster_channel_id","auto_member_role_id","welcome_message_id",
-                      "heartbeat_channel_id","uptime_minutes"]
-            c = await db.execute("PRAGMA table_info(guild_config)")
-            cols = {row[1] for row in await c.fetchall()}
-            for col in needed:
-                if col not in cols:
-                    await db.execute(f"ALTER TABLE guild_config ADD COLUMN {col} INTEGER DEFAULT NULL")
-            await db.commit()
-    except Exception as e:
-        log.warning(f"[migrate] ensure_setup_columns failed: {e}")
-# ==================== END CONFIG HELPERS + SCHEMA ====================
+class ClassSelect(discord.ui.Select):
+    def __init__(self):
+        opts = [discord.SelectOption(label=c, value=c) for c in _ALLOWED_CLASSES]
+        super().__init__(placeholder="Select your main class", min_values=1, max_values=1, options=opts)
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_class = self.values[0]
+        await interaction.response.edit_message(content=f"Selected class: **{self.view.selected_class}**", view=self.view)
 
-# ==================== WELCOME PROMPT (definition) ====================
+class RosterStartView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.selected_class = None
+        self.add_item(ClassSelect())
+
+    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
+    async def _continue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_class:
+            return await interaction.response.send_message("Pick a class first.", ephemeral=True)
+        await interaction.response.send_modal(RosterModal(self.selected_class))
+
+class RosterModal(discord.ui.Modal, title="Start Roster"):
+    main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
+    main_level = discord.ui.TextInput(label="Main level (1–250)", placeholder="215", required=True, max_length=3)
+    alts = discord.ui.TextInput(label="Alts (name / level / class; or N/A)", style=discord.TextStyle.paragraph, required=True, default="N/A", max_length=400)
+    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
+
+    def __init__(self, selected_class: str):
+        super().__init__(timeout=600)
+        self.selected_class = selected_class
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            lvl = int(str(self.main_level))
+        except Exception:
+            return await interaction.response.send_message("Level must be a number.", ephemeral=True)
+        if not (1 <= lvl <= 250):
+            return await interaction.response.send_message("Level must be between 1 and 250.", ephemeral=True)
+        main_name = str(self.main_name).strip()
+        cls = _norm_class(self.selected_class)
+        raw_alts = str(self.alts).strip()
+        alts: list = []
+        if raw_alts.lower() != "n/a":
+            chunks = re.split(r"[;\n]+", raw_alts)
+            for ch in chunks:
+                parts = [p.strip() for p in ch.split("/") if p.strip()]
+                if len(parts) >= 3:
+                    nm, lv, cl = parts[0], parts[1], parts[2]
+                    try: lv = int(re.sub(r"[^0-9]", "", lv))
+                    except Exception: pass
+                    alts.append({"name": nm[:32], "level": lv, "class": _norm_class(cl)})
+        tz_raw, tz_norm = _parse_timezone(str(self.timezone))
+
+        summary = f"**Main:** {main_name} • {lvl} • {cls}\n**Alts:** " + (", ".join([f"{a['name']} • {a['level']} • {a['class']}" for a in alts]) if alts else "N/A") + f"\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        view = RosterConfirmView(main_name, lvl, cls, alts, tz_raw, tz_norm)
+        await interaction.response.send_message(f"Review your info:\n{summary}", ephemeral=True, view=view)
+
+class RosterConfirmView(discord.ui.View):
+    def __init__(self, main_name: str, lvl: int, cls: str, alts: list, tz_raw: str, tz_norm: str):
+        super().__init__(timeout=600)
+        self.payload = (main_name, lvl, cls, alts, tz_raw, tz_norm)
+
+    @discord.ui.button(label="Join the server!", style=discord.ButtonStyle.success)
+    async def join_server(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild; user = interaction.user
+        if not guild:
+            return await interaction.response.send_message("Guild not found.", ephemeral=True)
+        gid = guild.id
+        try:
+            await _upsert_roster(gid, user.id, *self.payload)
+        except Exception as e:
+            log.warning(f"[roster] upsert failed: {e}")
+            return await interaction.response.send_message("Could not save your info.", ephemeral=True)
+        rid = await get_auto_member_role_id(gid)
+        if rid:
+            role = guild.get_role(rid)
+            if role:
+                try: await user.add_roles(role, reason="Roster intake complete")
+                except Exception as e: log.warning(f"[roster] role grant failed: {e}")
+        roster_ch_id = await get_roster_channel_id(gid)
+        if roster_ch_id:
+            ch = guild.get_channel(roster_ch_id)
+            if can_send(ch):
+                try:
+                    e = _build_roster_embed(user, *self.payload)
+                    await ch.send(embed=e)
+                except Exception as e:
+                    log.warning(f"[roster] post failed: {e}")
+        await interaction.response.edit_message(content="You're set. Welcome.", view=None)
+# ==================== END ROSTER INTAKE UI ====================
+
+# ==================== WELCOME PROMPT ====================
 class WelcomeRootView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="Start Roster", style=discord.ButtonStyle.primary, custom_id="start_roster_btn")
     async def start_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
-        RSV = globals().get("RosterStartView")
-        if RSV:
-            view = RSV()
+        view = RosterStartView() if "RosterStartView" in globals() else None
+        if view:
             await interaction.response.send_message("Let's get your roster set up.", ephemeral=True, view=view)
         else:
-            await interaction.response.send_message("Roster intake is available after the next restart.", ephemeral=True)
+            await interaction.response.send_message("Roster intake is unavailable in this build.", ephemeral=True)
 
 async def ensure_welcome_prompt(guild: discord.Guild):
     gid = guild.id
@@ -3404,10 +3513,7 @@ async def start_roster_cmd(interaction: discord.Interaction):
     if not isinstance(interaction.channel, discord.TextChannel) or interaction.channel.id != wcid:
         ch = interaction.guild.get_channel(wcid)
         return await interaction.response.send_message(f"Run this in {ch.mention}.", ephemeral=True)
-    RSV = globals().get("RosterStartView")
-    if not RSV:
-        return await interaction.response.send_message("Roster intake is unavailable in this build.", ephemeral=True)
-    view = RSV()
+    view = RosterStartView()
     await interaction.response.send_message("Let's get your roster set up.", ephemeral=True, view=view)
 
 @_ac_cfg.command(name="roster-repost", description="Repost a user's roster card to the roster channel")
@@ -3437,17 +3543,10 @@ async def roster_repost_cmd(interaction: discord.Interaction, member: discord.Me
     await ch.send(embed=e)
     await interaction.response.send_message(f"Reposted in {ch.mention}.", ephemeral=True)
 
-@_ac_cfg.command(name="setup-uptime", description="Set heartbeat channel and interval in minutes (use 0 to disable)")
-@_ac_cfg.checks.has_permissions(manage_guild=True)
-async def setup_uptime(interaction: discord.Interaction, channel: discord.TextChannel, minutes: int):
-    await _cfg_set_int(interaction.guild.id, "heartbeat_channel_id", channel.id)
-    await _cfg_set_int(interaction.guild.id, "uptime_minutes", max(0, int(minutes)))
-    await interaction.response.send_message(f"Heartbeat channel set to {channel.mention}; interval {minutes} minutes.", ephemeral=True)
-
 # Bind per guild and sync
 @bot.listen("on_ready")
 async def __bind_config_commands_and_sync():
-    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime]
+    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd]
     for g in bot.guilds:
         for cmd in cmds:
             try:
