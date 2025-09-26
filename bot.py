@@ -3968,142 +3968,164 @@ async def __add_global_checks_and_errors():
         except Exception:
             pass
 
-# ==================== STRUCTURED ALT INTAKE OVERRIDE ====================
-# Ensures alts use the same structured flow as mains. No free-form block.
-import json as _json2
-import re as _re2
+# ==================== POLISH: clearer alt flow + star-decorated embeds ====================
+# Text config helpers for star GIF
+async def _cfg_get_text(gid: int, field: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+        c = await db.execute("PRAGMA table_info(guild_config)")
+        cols = {row[1] for row in await c.fetchall()}
+        if field not in cols:
+            await db.execute(f"ALTER TABLE guild_config ADD COLUMN {field} TEXT DEFAULT NULL")
+            await db.commit()
+        c2 = await db.execute(f"SELECT {field} FROM guild_config WHERE guild_id=?", (gid,))
+        r = await c2.fetchone()
+        return (r[0] if r else None)
 
-_ALLOWED_CLASSES = ["Ranger", "Rogue", "Warrior", "Mage", "Druid"]
+async def _cfg_set_text(gid: int, field: str, val: str | None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+        c = await db.execute("PRAGMA table_info(guild_config)")
+        cols = {row[1] for row in await c.fetchall()}
+        if field not in cols:
+            await db.execute(f"ALTER TABLE guild_config ADD COLUMN {field} TEXT DEFAULT NULL")
+        await db.execute(
+            f"INSERT INTO guild_config (guild_id,{field}) VALUES (?,?) "
+            f"ON CONFLICT(guild_id) DO UPDATE SET {field}=excluded.{field}",
+            (gid, val)
+        ); await db.commit()
 
-def _fmt_alts(alts: list) -> str:
-    if not alts:
-        return "N/A"
+# Decorate embed with stars: uses configured GIF when available; falls back to unicode sparkles
+async def decorate_embed_with_stars(e: discord.Embed, guild_id: int):
     try:
-        return ", ".join(f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in alts) or "N/A"
+        gif = await _cfg_get_text(guild_id, "roster_star_gif")
     except Exception:
-        return "N/A"
-
-def _norm_class(s: str) -> str:
-    t = (s or "").strip().title()
-    return t if t in _ALLOWED_CLASSES else _ALLOWED_CLASSES[0]
-
-def _parse_timezone(tz: str):
-    raw = (tz or "").strip()
-    norm = ""
-    if "/" in raw and len(raw) <= 64:
-        norm = raw
-    else:
-        m = _re2.match(r"^(?:UTC)?\s*([+-]?)(\d{1,2})(?::?(\d{2}))?$", raw)
-        if m:
-            sign = -1 if m.group(1) == "-" else 1
-            hh = int(m.group(2)); mm = int(m.group(3) or 0)
-            if 0 <= hh <= 14 and 0 <= mm < 60:
-                norm = f"UTC{'-' if sign<0 else '+'}{hh:02d}:{mm:02d}"
-    return raw or "N/A", norm
-
-# Override main modal to exclude any alts textarea
-class RosterModal(discord.ui.Modal, title="Start Roster"):
-    main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
-    main_level = discord.ui.TextInput(label="Main level (1–250)", placeholder="215", required=True, max_length=3)
-    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
-
-    def __init__(self, selected_class: str):
-        super().__init__(timeout=600)
-        self.selected_class = selected_class
-
-    async def on_submit(self, interaction: discord.Interaction):
-        # Validate level
+        gif = None
+    if isinstance(gif, str) and gif.startswith("http"):
         try:
-            lvl = int(str(self.main_level))
+            e.set_thumbnail(url=gif)     # top-right
+            e.set_author(name="\u200b", icon_url=gif)  # top-left
         except Exception:
-            return await interaction.response.send_message("Level must be a number.", ephemeral=True)
-        if not (1 <= lvl <= 250):
-            return await interaction.response.send_message("Level must be between 1 and 250.", ephemeral=True)
+            pass
+    # Always add unicode sparkles in the title for clarity
+    try:
+        if e.title:
+            e.title = f"✨ {e.title} ✨"
+    except Exception:
+        pass
+    return e
 
-        main_name = str(self.main_name).strip()
-        cls = _norm_class(self.selected_class)
-        tz_raw, tz_norm = _parse_timezone(str(self.timezone))
+# Setup command to configure the star GIF
+from discord import app_commands as _ac_star
+@_ac_star.command(name="setup-stargif", description="Set a GIF URL to decorate roster embeds with stars (use 'clear' to unset)")
+@_ac_star.checks.has_permissions(manage_guild=True)
+async def setup_stargif(interaction: discord.Interaction, url: str):
+    val = None if url.lower() == "clear" else url.strip()
+    await _cfg_set_text(interaction.guild.id, "roster_star_gif", val)
+    msg = "Cleared." if val is None else f"Set to {val}."
+    await interaction.response.send_message(f"Star GIF {msg}", ephemeral=True)
 
-        # Start confirmation with empty alts; let user add structured alts
-        view = RosterConfirmView(main_name, lvl, cls, [], tz_raw, tz_norm)
-        await interaction.response.send_message(view._summary_text(), ephemeral=True, view=view)
+# Bind the star setup command
+@bot.listen("on_ready")
+async def __bind_star_setup_and_sync():
+    for g in bot.guilds:
+        try:
+            bot.tree.add_command(setup_stargif, guild=g)
+        except Exception:
+            pass
+        try:
+            await bot.tree.sync(guild=g)
+        except Exception:
+            pass
 
-# Class picker reused for alts
-class AltClassSelect(discord.ui.Select):
-    def __init__(self):
-        opts = [discord.SelectOption(label=c, value=c) for c in _ALLOWED_CLASSES]
-        super().__init__(placeholder="Select alt class", min_values=1, max_values=1, options=opts)
-    async def callback(self, interaction: discord.Interaction):
-        self.view.selected_alt_class = self.values[0]
-        await interaction.response.edit_message(content=self.view._summary_text(), view=self.view)
+# Improve the alt select UX: enable the Add Alt button and make next step obvious.
+def _enable_add_alt_on_view(view: discord.ui.View, selected: str):
+    try:
+        for child in view.children:
+            if isinstance(child, discord.ui.Button) and getattr(child, "custom_id", "") == "add_alt_btn":
+                child.disabled = False
+                child.style = discord.ButtonStyle.primary
+                child.label = f"Add Alt — {selected}"
+    except Exception:
+        pass
 
-# One alt at a time, fields optional
-class AltModal(discord.ui.Modal, title="Add Alt"):
-    alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
-    alt_level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3, placeholder="e.g., 120")
-
-    def __init__(self, parent_view: "RosterConfirmView"):
-        super().__init__(timeout=300)
-        self.parent_view = parent_view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        name = str(self.alt_name).strip()
-        lvl = str(self.alt_level).strip()
-        lvl_int = None
-        if lvl:
+# If an AltClassSelect exists, replace its callback to enable the button and show next step
+for cls in list(globals().values()):
+    if isinstance(cls, type) and cls.__name__ == "AltClassSelect":
+        old_cb = getattr(cls, "callback", None)
+        async def _new_cb(self, interaction: discord.Interaction):
+            self.view.selected_alt_class = self.values[0]
+            _enable_add_alt_on_view(self.view, self.view.selected_alt_class)
+            hint = "\n\nNext: press **Add Alt** to enter name and level, or press **Join the server!** to finish."
             try:
-                lvl_int = int(_re2.sub(r"[^0-9]", "", lvl))
+                await interaction.response.edit_message(content=(self.view._summary_text() + hint), view=self.view)
             except Exception:
-                lvl_int = None
-        if lvl_int is not None and not (1 <= lvl_int <= 250):
-            return await interaction.response.send_message("Alt level must be between 1 and 250.", ephemeral=True)
-        cls = self.parent_view.selected_alt_class or "Ranger"
+                # Fallback to old behavior
+                if callable(old_cb):
+                    await old_cb(self, interaction)
+        setattr(cls, "callback", _new_cb)
+        break
 
-        # If nothing provided, just re-render
-        if not name and lvl_int is None:
-            return await interaction.response.send_message(self.parent_view._summary_text(), ephemeral=True, view=self.parent_view)
-
-        alt = {"class": _norm_class(cls)}
-        if name:
-            alt["name"] = name[:32]
-        if lvl_int is not None:
-            alt["level"] = lvl_int
-
-        mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
-        new_alts = list(alts or []) + [alt]
-        new_view = RosterConfirmView(mname, mlvl, mcls, new_alts, tz_raw, tz_norm)
-        await interaction.response.send_message(new_view._summary_text(), ephemeral=True, view=new_view)
-
-# Confirmation view with Add/Remove controls
+# Override RosterConfirmView to add custom_id on Add Alt button and decorate embed with stars when posting
 class RosterConfirmView(discord.ui.View):
     def __init__(self, main_name: str, lvl: int, cls: str, alts: list, tz_raw: str, tz_norm: str):
         super().__init__(timeout=900)
         self.payload = (main_name, lvl, cls, alts or [], tz_raw, tz_norm)
         self.selected_alt_class = None
-        self.add_item(AltClassSelect())
+        # Ensure an AltClassSelect exists; if not, add our own
+        has_alt_select = any(isinstance(ch, discord.ui.Select) for ch in self.children)
+        if not has_alt_select:
+            # Lightweight inline select
+            opts = [discord.SelectOption(label=c, value=c) for c in ["Ranger","Rogue","Warrior","Mage","Druid"]]
+            sel = discord.ui.Select(placeholder="Select alt class", min_values=1, max_values=1, options=opts)
+            async def sel_cb(interaction: discord.Interaction):
+                self.selected_alt_class = sel.values[0]
+                _enable_add_alt_on_view(self, self.selected_alt_class)
+                hint = "\n\nNext: press **Add Alt** to enter name and level, or press **Join the server!** to finish."
+                await interaction.response.edit_message(content=(self._summary_text() + hint), view=self)
+            sel.callback = sel_cb
+            self.add_item(sel)
 
     def _summary_text(self) -> str:
         mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
+        try:
+            alts_line = ", ".join(f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in (alts or [])) or "N/A"
+        except Exception:
+            alts_line = "N/A"
         return (
-            f"Review your info:\n"
+            f"Step 2/2 — Review:\n"
             f"**Main:** {mname} • {mlvl} • {mcls}\n"
-            f"**Alts:** {_fmt_alts(alts)}\n"
+            f"**Alts:** {alts_line}\n"
             f"**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
         )
 
-    @discord.ui.button(label="Add Alt", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Add Alt", style=discord.ButtonStyle.secondary, custom_id="add_alt_btn", disabled=True)
     async def add_alt(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.selected_alt_class:
             return await interaction.response.send_message("Pick an alt class from the dropdown first.", ephemeral=True)
-        await interaction.response.send_modal(AltModal(self))
-
-    @discord.ui.button(label="Remove Last Alt", style=discord.ButtonStyle.danger)
-    async def remove_alt(self, interaction: discord.Interaction, button: discord.ui.Button):
-        mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
-        if alts:
-            alts = alts[:-1]
-        self.payload = (mname, mlvl, mcls, alts, tz_raw, tz_norm)
-        await interaction.response.edit_message(content=self._summary_text(), view=self)
+        # Modal defined earlier in your build or our patch; fallback if missing
+        AltModalClass = globals().get("AltModal")
+        if AltModalClass is None:
+            # Lightweight inline modal substitute
+            modal = discord.ui.Modal(title="Add Alt")
+            name = discord.ui.TextInput(label="Alt name", required=False, max_length=32)
+            level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3)
+            modal.add_item(name); modal.add_item(level)
+            async def on_submit(modal_inter: discord.Interaction):
+                nm = str(name).strip()
+                lv = str(level).strip()
+                try: lv_i = int(re.sub(r"[^0-9]", "", lv)) if lv else None
+                except Exception: lv_i = None
+                a = {"class": self.selected_alt_class}
+                if nm: a["name"] = nm[:32]
+                if lv_i is not None: a["level"] = lv_i
+                mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
+                self.payload = (mname, mlvl, mcls, (alts or []) + [a], tz_raw, tz_norm)
+                await modal_inter.response.send_message(self._summary_text(), ephemeral=True, view=self)
+            modal.on_submit = on_submit
+            return await interaction.response.send_modal(modal)
+        else:
+            return await interaction.response.send_modal(AltModalClass(self))
 
     @discord.ui.button(label="Join the server!", style=discord.ButtonStyle.success)
     async def join_server(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4127,12 +4149,14 @@ class RosterConfirmView(discord.ui.View):
             ch = guild.get_channel(roster_ch_id)
             if can_send(ch):
                 try:
+                    # Build and decorate embed
                     e = _build_roster_embed(user, *self.payload)
+                    await decorate_embed_with_stars(e, gid)
                     await ch.send(embed=e)
                 except Exception as e:
                     log.warning(f"[roster] post failed: {e}")
         await interaction.response.edit_message(content="You're set. Welcome.", view=None)
-# ==================== END STRUCTURED ALT INTAKE OVERRIDE ====================
+# ==================== END POLISH ====================
 
 
 
@@ -4145,4 +4169,3 @@ class RosterConfirmView(discord.ui.View):
 
 if __name__ == "__main__":
     asyncio.run(main())
-
