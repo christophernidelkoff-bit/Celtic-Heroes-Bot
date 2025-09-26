@@ -3595,6 +3595,12 @@ async def __bind_config_commands_and_sync():
 # ==================== END MINIMAL CONFIG COMMANDS ====================
 
 # ==================== ROSTER INTAKE UI (required) ====================
+
+def _alts_line(alts):
+    try:
+        return ", ".join(f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in (alts or [])) or "N/A"
+    except Exception:
+        return "N/A"
 import json as _json
 import re as _re
 
@@ -3714,7 +3720,7 @@ class RosterModal(discord.ui.Modal, title="Start Roster"):
                     alts.append({"name": nm[:32], "level": lv, "class": _norm_class(cl)})
         tz_raw, tz_norm = _parse_timezone(str(self.timezone))
 
-        summary = f"**Main:** {main_name} • {lvl} • {cls}\n**Alts:** " + (", ".join([f\"{a['name']} • {a['level']} • {a['class']}\" for a in alts]) if alts else "N/A") + f"\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        summary = f"**Main:** {main_name} • {lvl} • {cls}\n**Alts:** " + (_alts_line(alts)) + f"\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
         view = RosterConfirmView(main_name, lvl, cls, alts, tz_raw, tz_norm)
         await interaction.response.send_message(f"Review your info:\n{summary}", ephemeral=True, view=view)
 
