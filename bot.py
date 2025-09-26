@@ -1,3 +1,53 @@
+
+# ==================== EARLY SCHEMA BOOTSTRAP (sync; no removals) ====================
+# Ensures the DB has required tables/columns before any background task or on_ready uses them.
+try:
+    import os as __os_boot, sqlite3 as __sqlite_boot, pathlib as __pl_boot
+    __DATA_DIR_BOOT = __os_boot.getenv("DATA_DIR") or __os_boot.getenv("RENDER_DISK_PATH") or "/var/data"
+    try:
+        __pl_boot.Path(__DATA_DIR_BOOT).mkdir(parents=True, exist_ok=True)
+    except Exception:
+        __DATA_DIR_BOOT = "/tmp"
+        __pl_boot.Path(__DATA_DIR_BOOT).mkdir(parents=True, exist_ok=True)
+    __DB_BOOT = __pl_boot.Path(__DATA_DIR_BOOT) / (__os_boot.getenv("DB_FILE") or "bosses.db")
+    __conn = __sqlite_boot.connect(str(__DB_BOOT), timeout=5)
+    __cur = __conn.cursor()
+    __cur.execute("PRAGMA journal_mode=WAL;")
+    __cur.execute("PRAGMA synchronous=NORMAL;")
+    __cur.execute("PRAGMA busy_timeout=5000;")
+    # Tables referenced across the code paths
+    __cur.execute("""CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)""")
+    __cur.execute("""CREATE TABLE IF NOT EXISTS blacklist (
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+    )""")
+    __cur.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+    # Columns that earlier logs said were missing
+    __cur.execute("PRAGMA table_info(guild_config)")
+    __have = {row[1] for row in __cur.fetchall()}
+    __need = [
+        ("default_channel","INTEGER","NULL"),
+        ("prefix","TEXT","'!'"),
+        ("sub_channel_id","INTEGER","NULL"),
+        ("sub_message_id","INTEGER","NULL"),
+        ("uptime_minutes","INTEGER","NULL"),
+        ("heartbeat_channel_id","INTEGER","NULL"),
+        ("show_eta","INTEGER","0"),
+        ("sub_ping_channel_id","INTEGER","NULL"),
+    ]
+    for __name, __typ, __def in __need:
+        if __name not in __have:
+            __cur.execute(f"ALTER TABLE guild_config ADD COLUMN {__name} {__typ} DEFAULT {__def}")
+    __conn.commit()
+    __conn.close()
+except Exception as __e_boot:
+    try:
+        print(f"[early-bootstrap] skipped: {__e_boot}")
+    except Exception:
+        pass
+# ==================== END EARLY SCHEMA BOOTSTRAP ====================
+
 # -------------------- Celtic Heroes Boss Tracker — Foundations (Part 1/4) --------------------
 # Features in this part:
 # - Env & logging, intents, globals
@@ -4550,210 +4600,6 @@ async def __warn_ephemeral_db_if_needed():
     except Exception:
         pass
 # ==================== END PATCH ====================
-
-# ==================== APPENDED FIX BLOCK (no deletions of original code) ====================
-# - Coerce alt levels on save and render so they are shown as numbers.
-# - Keep star formatting around the full main line.
-# - On boot, subtract downtime from future timers and post catch-up for due timers.
-# - Create missing tables/columns and set SQLite pragmas to reduce locks.
-import json as __json_fix2, re as __re_fix2
-import aiosqlite as __aiosqlite_fix2
-import discord as __discord_fix2
-
-def __coerce_lvl_fix2(v):
-    try:
-        if v is None: return None
-        if isinstance(v, int): return v
-        m = __re_fix2.search(r'\d+', str(v))
-        return int(m.group(0)) if m else None
-    except Exception:
-        return None
-
-# ---- Wrap _upsert_roster if present to sanitize incoming alts ----
-try:
-    __orig_upsert_roster_fix2 = _upsert_roster  # noqa: F821
-except NameError:
-    __orig_upsert_roster_fix2 = None
-
-async def _upsert_roster_fix2(gid, uid, main_name, main_level, main_class, alts, tz_raw, tz_norm):
-    ml = __coerce_lvl_fix2(main_level) or main_level
-    alt_list = []
-    try:
-        if isinstance(alts, str):
-            alt_list = __json_fix2.loads(alts) or []
-        elif isinstance(alts, list):
-            alt_list = list(alts)
-    except Exception:
-        alt_list = []
-    for a in alt_list:
-        if isinstance(a, dict):
-            a["level"] = __coerce_lvl_fix2(a.get("level") or a.get("lvl") or a.get("lv"))
-    if __orig_upsert_roster_fix2:
-        return await __orig_upsert_roster_fix2(gid, uid, main_name, ml, main_class, alt_list, tz_raw, tz_norm)
-    # Fallback storage if original missing
-    async with __aiosqlite_fix2.connect(DB_PATH) as db:
-        await db.execute("""CREATE TABLE IF NOT EXISTS roster_members (
-            guild_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            main_name TEXT NOT NULL,
-            main_level INTEGER NOT NULL,
-            main_class TEXT NOT NULL,
-            alts_json TEXT NOT NULL,
-            timezone_raw TEXT NOT NULL,
-            timezone_norm TEXT,
-            submitted_at INTEGER,
-            updated_at INTEGER,
-            roster_msg_id INTEGER,
-            PRIMARY KEY (guild_id, user_id)
-        )""")
-        await db.execute("""INSERT INTO roster_members
-          (guild_id,user_id,main_name,main_level,main_class,alts_json,timezone_raw,timezone_norm,submitted_at,updated_at,roster_msg_id)
-          VALUES (?,?,?,?,?,?,?, ?, strftime('%s','now'),strftime('%s','now'),
-             COALESCE((SELECT roster_msg_id FROM roster_members WHERE guild_id=? AND user_id=?),NULL))
-          ON CONFLICT(guild_id,user_id) DO UPDATE SET
-            main_name=excluded.main_name,
-            main_level=excluded.main_level,
-            main_class=excluded.main_class,
-            alts_json=excluded.alts_json,
-            timezone_raw=excluded.timezone_raw,
-            timezone_norm=excluded.timezone_norm,
-            updated_at=excluded.updated_at
-        """, (gid, uid, main_name, int(ml) if isinstance(ml,int) else ml, main_class, __json_fix2.dumps(alt_list), tz_raw, tz_norm, gid, uid))
-        await db.commit()
-
-# Bind wrapper without deleting original
-try:
-    _upsert_roster = _upsert_roster_fix2
-except Exception:
-    pass
-
-# ---- Final embed builder that emphasizes main and prints alt levels ----
-def _build_roster_embed_fix2(member, main_name, main_level, main_class, alts, tz_raw, tz_norm):
-    try:
-        if isinstance(alts, str):
-            try: alts_list = __json_fix2.loads(alts) or []
-            except Exception: alts_list = []
-        else:
-            alts_list = alts or []
-        lines = []
-        for i, a in enumerate(alts_list, 1):
-            nm, lv, cl = "?", None, "?"
-            if isinstance(a, dict):
-                nm = str(a.get("name","?"))[:32]
-                lv = __coerce_lvl_fix2(a.get("level") or a.get("lvl") or a.get("lv"))
-                cl = a.get("class","?")
-            lines.append(f"{i}. {nm} • {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} • {cl}")
-        mlv = __coerce_lvl_fix2(main_level) or main_level
-        main_line = f"**✨ {main_name} • Lv {mlv} • {main_class} ✨**"
-        e = __discord_fix2.Embed(title=f"New Member: {member.display_name}", color=__discord_fix2.Color.blurple())
-        e.add_field(name="Main", value=main_line, inline=False)
-        e.add_field(name="Alts", value=("\n".join(lines) if lines else "N/A"), inline=False)
-        tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
-        e.add_field(name="Timezone", value=tz or "N/A", inline=False)
-        e.set_footer(text="Welcome!")
-        return e
-    except Exception:
-        return __discord_fix2.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} • {main_level} • {main_class}")
-
-@bot.listen("on_ready")
-async def __bind_embed_fix2():
-    try:
-        globals()["_build_roster_embed"] = _build_roster_embed_fix2
-        log.info("[embed] fix2 bound")
-    except Exception:
-        pass
-
-# ---- SQLite tune + schema guards for logged failures ----
-async def __sqlite_and_schema_fix2():
-    try:
-        async with __aiosqlite_fix2.connect(DB_PATH) as db:
-            await db.execute("PRAGMA journal_mode=WAL;")
-            await db.execute("PRAGMA synchronous=NORMAL;")
-            await db.execute("PRAGMA busy_timeout=5000;")
-            await db.execute("""CREATE TABLE IF NOT EXISTS blacklist (
-                guild_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                PRIMARY KEY (guild_id, user_id)
-            )""")
-            await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
-            c = await db.execute("PRAGMA table_info(guild_config)")
-            cols = {row[1] for row in await c.fetchall()}
-            for name, typ, default in [
-                ("prefix","TEXT","'!'"),
-                ("welcome_channel_id","INTEGER","NULL"),
-                ("roster_channel_id","INTEGER","NULL"),
-                ("auto_member_role_id","INTEGER","NULL"),
-                ("timers_role_id","INTEGER","NULL"),
-                ("uptime_channel_id","INTEGER","NULL"),
-                ("uptime_interval_min","INTEGER","5"),
-                ("sub_channel_id","INTEGER","NULL"),
-                ("roster_star_gif","TEXT","NULL"),
-            ]:
-                if name not in cols:
-                    await db.execute(f"ALTER TABLE guild_config ADD COLUMN {name} {typ} DEFAULT {default}")
-            await db.commit()
-    except Exception as e:
-        try: log.warning(f"[schema] fix2 failed: {e}")
-        except Exception: pass
-
-# ---- Downtime compensation ----
-async def __downtime_comp_fix2():
-    try:
-        boot = now_ts()
-        off_since = None
-        try:
-            v = await meta_get("offline_since")
-            if v and str(v).isdigit():
-                off_since = int(v)
-        except Exception: pass
-        if off_since is None:
-            try:
-                last = await meta_get("last_tick_ts")
-                if last and str(last).isdigit():
-                    last_i = int(last)
-                    if boot - last_i > CHECK_INTERVAL_SECONDS * 2:
-                        off_since = last_i
-            except Exception: pass
-
-        async with __aiosqlite_fix2.connect(DB_PATH) as db:
-            c = await db.execute("SELECT id,guild_id,channel_id,name,next_spawn_ts,category FROM bosses")
-            rows = [(int(bid), int(gid), ch, nm, int(ts), cat) for bid, gid, ch, nm, ts, cat in await c.fetchall()]
-
-        if off_since is not None:
-            for bid, gid, ch_id, name, ts, cat in rows:
-                if off_since <= ts <= boot:
-                    g = bot.get_guild(gid)
-                    ch = await resolve_announce_channel(gid, ch_id, cat) if g else None
-                    if ch and can_send(ch):
-                        try:
-                            ago = human_ago(boot - ts)
-                            await ch.send(f":zzz: While I was offline, **{name}** spawned ({ago}).")
-                        except Exception: pass
-                    try: await send_subscription_ping(gid, bid, phase="window", boss_name=name)
-                    except Exception: pass
-            dt = max(0, boot - int(off_since))
-            if dt > 0:
-                async with __aiosqlite_fix2.connect(DB_PATH) as db:
-                    for bid, _, _, _, ts, _ in rows:
-                        if ts > boot:
-                            new_ts = ts - dt
-                            if new_ts < boot: new_ts = boot
-                            await db.execute("UPDATE bosses SET next_spawn_ts=? WHERE id=?", (int(new_ts), int(bid)))
-                    await db.commit()
-            try: await meta_set("offline_since", "")
-            except Exception: pass
-    except Exception as e:
-        try: log.warning(f"[boot] comp fix2 failed: {e}")
-        except Exception: pass
-
-@bot.listen("on_ready")
-async def __run_fix_block2():
-    await __sqlite_and_schema_fix2()
-    await __downtime_comp_fix2()
-    try: log.info("[fixes] block applied")
-    except Exception: pass
-# ==================== END APPENDED FIX BLOCK ====================
-
 
 
 
