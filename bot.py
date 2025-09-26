@@ -1,53 +1,3 @@
-
-# ==================== EARLY SCHEMA BOOTSTRAP (sync; no removals) ====================
-# Ensures the DB has required tables/columns before any background task or on_ready uses them.
-try:
-    import os as __os_boot, sqlite3 as __sqlite_boot, pathlib as __pl_boot
-    __DATA_DIR_BOOT = __os_boot.getenv("DATA_DIR") or __os_boot.getenv("RENDER_DISK_PATH") or "/var/data"
-    try:
-        __pl_boot.Path(__DATA_DIR_BOOT).mkdir(parents=True, exist_ok=True)
-    except Exception:
-        __DATA_DIR_BOOT = "/tmp"
-        __pl_boot.Path(__DATA_DIR_BOOT).mkdir(parents=True, exist_ok=True)
-    __DB_BOOT = __pl_boot.Path(__DATA_DIR_BOOT) / (__os_boot.getenv("DB_FILE") or "bosses.db")
-    __conn = __sqlite_boot.connect(str(__DB_BOOT), timeout=5)
-    __cur = __conn.cursor()
-    __cur.execute("PRAGMA journal_mode=WAL;")
-    __cur.execute("PRAGMA synchronous=NORMAL;")
-    __cur.execute("PRAGMA busy_timeout=5000;")
-    # Tables referenced across the code paths
-    __cur.execute("""CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)""")
-    __cur.execute("""CREATE TABLE IF NOT EXISTS blacklist (
-        guild_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        PRIMARY KEY (guild_id, user_id)
-    )""")
-    __cur.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
-    # Columns that earlier logs said were missing
-    __cur.execute("PRAGMA table_info(guild_config)")
-    __have = {row[1] for row in __cur.fetchall()}
-    __need = [
-        ("default_channel","INTEGER","NULL"),
-        ("prefix","TEXT","'!'"),
-        ("sub_channel_id","INTEGER","NULL"),
-        ("sub_message_id","INTEGER","NULL"),
-        ("uptime_minutes","INTEGER","NULL"),
-        ("heartbeat_channel_id","INTEGER","NULL"),
-        ("show_eta","INTEGER","0"),
-        ("sub_ping_channel_id","INTEGER","NULL"),
-    ]
-    for __name, __typ, __def in __need:
-        if __name not in __have:
-            __cur.execute(f"ALTER TABLE guild_config ADD COLUMN {__name} {__typ} DEFAULT {__def}")
-    __conn.commit()
-    __conn.close()
-except Exception as __e_boot:
-    try:
-        print(f"[early-bootstrap] skipped: {__e_boot}")
-    except Exception:
-        pass
-# ==================== END EARLY SCHEMA BOOTSTRAP ====================
-
 # -------------------- Celtic Heroes Boss Tracker — Foundations (Part 1/4) --------------------
 # Features in this part:
 # - Env & logging, intents, globals
@@ -61,6 +11,69 @@ except Exception as __e_boot:
 # - Subscription ping helper (separate designated channel supported)
 
 from __future__ import annotations
+
+# ==================== EARLY SCHEMA BOOTSTRAP (sync; placed after future imports) ====================
+# Ensures required tables/columns exist *before* any background tasks run.
+try:
+    import os as __os_boot, sqlite3 as __sqlite_boot, pathlib as __pl_boot
+    def __ensure_db_at(path_dir: str):
+        try:
+            __pl_boot.Path(path_dir).mkdir(parents=True, exist_ok=True)
+            dbp = __pl_boot.Path(path_dir) / "bosses.db"
+            conn = __sqlite_boot.connect(str(dbp), timeout=5)
+            cur = conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL;")
+            cur.execute("PRAGMA synchronous=NORMAL;")
+            cur.execute("PRAGMA busy_timeout=5000;")
+            # Core tables
+            cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+            cur.execute("""CREATE TABLE IF NOT EXISTS blacklist (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )""")
+            cur.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+            # Columns observed missing in logs
+            cur.execute("PRAGMA table_info(guild_config)")
+            have = {row[1] for row in cur.fetchall()}
+            need = [
+                ("prefix","TEXT","'!'"),
+                ("welcome_channel_id","INTEGER","NULL"),
+                ("roster_channel_id","INTEGER","NULL"),
+                ("auto_member_role_id","INTEGER","NULL"),
+                ("timers_role_id","INTEGER","NULL"),
+                ("uptime_channel_id","INTEGER","NULL"),
+                ("uptime_interval_min","INTEGER","5"),
+                ("sub_channel_id","INTEGER","NULL"),
+                ("sub_message_id","INTEGER","NULL"),
+                ("sub_ping_channel_id","INTEGER","NULL"),
+                ("default_channel","INTEGER","NULL"),
+                ("heartbeat_channel_id","INTEGER","NULL"),
+                ("uptime_minutes","INTEGER","NULL"),
+                ("show_eta","INTEGER","1"),
+                ("roster_star_gif","TEXT","NULL"),
+            ]
+            for name, typ, default in need:
+                if name not in have:
+                    cur.execute(f"ALTER TABLE guild_config ADD COLUMN {name} {typ} DEFAULT {default}")
+            conn.commit()
+            conn.close()
+            return True
+        except Exception:
+            return False
+
+    # Try both common locations so whichever the bot chooses is ready.
+    ok = False
+    for _dir in ("/var/data", "/tmp"):
+        if __ensure_db_at(_dir):
+            ok = True
+    if not ok:
+        print("[early-bootstrap] could not prepare DB at /var/data or /tmp")
+except Exception as __e_boot:
+    try: print(f"[early-bootstrap] skipped: {__e_boot}")
+    except Exception: pass
+# ==================== END EARLY SCHEMA BOOTSTRAP ====================
+
 
 import os
 import re
