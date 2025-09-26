@@ -4614,6 +4614,147 @@ async def __warn_ephemeral_db_if_needed():
         pass
 # ==================== END PATCH ====================
 
+# ==================== INLINE ALT ROSTER HOTFIX (no removals) ====================
+import json as __json_altfix, re as __re_altfix, asyncio as __asyncio_altfix
+import aiosqlite as __aiosqlite_altfix
+import discord as __discord_altfix
+
+__ALT_LVL_KEYS = ("level","lvl","lv","alt_level","Level")
+
+def __altfix_coerce_level(v):
+    try:
+        if v is None: return None
+        if isinstance(v, int): return v
+        m = __re_altfix.search(r"\d{1,3}", str(v))
+        if m:
+            n = int(m.group(0))
+            if 1 <= n <= 250: return n
+        return None
+    except Exception: return None
+
+def __altfix_norm(entry):
+    if isinstance(entry, dict):
+        nm = str(entry.get("name") or entry.get("Name") or entry.get("toon") or "?").strip()[:32] or "?"
+        lv = None
+        for k in __ALT_LVL_KEYS:
+            if k in entry:
+                lv = __altfix_coerce_level(entry.get(k)); break
+        cl = str(entry.get("class") or entry.get("Class") or entry.get("cls") or "?").strip()[:16] or "?"
+        return {"name": nm, "level": lv, "class": cl}
+    if isinstance(entry, (list, tuple)) and entry:
+        nm = str(entry[0]).strip()[:32] or "?"
+        lv = __altfix_coerce_level(entry[1] if len(entry) > 1 else None)
+        cl = str(entry[2]).strip()[:16] if len(entry) > 2 else "?"
+        return {"name": nm, "level": lv, "class": cl or "?"}
+    # Parse "Name • Lv 150 • Class"
+    parts = [p.strip() for p in str(entry).split("•")]
+    nm = (parts[0] if parts else "?")[:32] or "?"
+    lv = __altfix_coerce_level(parts[1] if len(parts) >= 2 else None)
+    cl = (parts[2] if len(parts) >= 3 else "?")[:16] or "?"
+    return {"name": nm, "level": lv, "class": cl}
+
+async def __altfix_sanitize_all(DB_PATH: str):
+    try:
+        async with __aiosqlite_altfix.connect(DB_PATH) as db:
+            await db.execute("""CREATE TABLE IF NOT EXISTS roster_members (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                main_name TEXT NOT NULL,
+                main_level INTEGER NOT NULL,
+                main_class TEXT NOT NULL,
+                alts_json TEXT NOT NULL,
+                timezone_raw TEXT NOT NULL,
+                timezone_norm TEXT,
+                submitted_at INTEGER,
+                updated_at INTEGER,
+                roster_msg_id INTEGER,
+                PRIMARY KEY (guild_id, user_id)
+            )""")
+            c = await db.execute("SELECT guild_id,user_id,alts_json FROM roster_members")
+            rows = await c.fetchall()
+            changed = 0
+            for gid, uid, j in rows:
+                try:
+                    alts = __json_altfix.loads(j) if isinstance(j, str) else (j or [])
+                except Exception:
+                    alts = []
+                norm = [__altfix_norm(a) for a in (alts or [])]
+                if __json_altfix.dumps(norm, sort_keys=True) != __json_altfix.dumps(alts or [], sort_keys=True):
+                    await db.execute("UPDATE roster_members SET alts_json=?, updated_at=strftime('%s','now') WHERE guild_id=? AND user_id=?",
+                                     (__json_altfix.dumps(norm), gid, uid))
+                    changed += 1
+            if changed:
+                await db.commit()
+                if 'log' in globals():
+                    log.info(f"[altfix] normalized {changed} roster rows")
+    except Exception as e:
+        if 'log' in globals():
+            log.warning(f"[altfix] sanitize failed: {e}")
+
+def __altfix_build(member, main_name, main_level, main_class, alts, tz_raw, tz_norm):
+    try:
+        if isinstance(alts, str):
+            try: alts_raw = __json_altfix.loads(alts) or []
+            except Exception: alts_raw = []
+        else:
+            alts_raw = alts or []
+        norm = [__altfix_norm(a) for a in alts_raw]
+        lines = []
+        for i, a in enumerate(norm, 1):
+            lv = a.get("level")
+            lines.append(f"{i}. {a['name']} • {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} • {a['class']}")
+        e = __discord_altfix.Embed(title=f"New Member: {member.display_name}", color=__discord_altfix.Color.blurple())
+        e.add_field(name="Main", value=f"**✨ {main_name} • Lv {main_level} • {main_class} ✨**", inline=False)
+        e.add_field(name="Alts", value=("\n".join(lines) if lines else "N/A"), inline=False)
+        tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        e.add_field(name="Timezone", value=tz or "N/A", inline=False)
+        e.set_footer(text="Welcome!")
+        return e
+    except Exception:
+        return __discord_altfix.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} • {main_level} • {main_class}")
+
+def __altfix_setup():
+    # Bind builder and sanitize after bot exists
+    _bot = globals().get("bot")
+    if not _bot:
+        return False
+    @_bot.listen("on_ready")
+    async def __altfix_bind_and_sanitize():
+        try:
+            globals()["_build_roster_embed"] = __altfix_build
+            if 'log' in globals(): log.info("[altfix] embed builder bound")
+        except Exception:
+            pass
+        # Figure DB path
+        dbp = globals().get("DB_PATH")
+        if not dbp:
+            import os, pathlib
+            # mirror runtime heuristic
+            for d in (os.getenv("DATA_DIR") or "/var/data", "/tmp"):
+                try:
+                    dbp = str(pathlib.Path(d) / "bosses.db")
+                    break
+                except Exception:
+                    continue
+        if dbp:
+            await __altfix_sanitize_all(dbp)
+    return True
+
+# Try to attach immediately; if bot not ready, retry shortly
+if not __altfix_setup():
+    async def __altfix_waiter():
+        for _ in range(10):
+            if __altfix_setup():
+                return
+            await __asyncio_altfix.sleep(0.5)
+    try:
+        import asyncio as __aio_tmp
+        __aio_tmp.get_running_loop().create_task(__altfix_waiter())
+    except Exception:
+        pass
+# ==================== END INLINE ALT ROSTER HOTFIX ====================
+
+
 
 
 
