@@ -3861,7 +3861,6 @@ async def _get_timers_role_id(gid: int):
     except Exception:
         return None
 
-@bot.tree.check
 async def __global_slash_permission_gate(interaction: discord.Interaction):
     # Admin bypass
     if interaction.user.guild_permissions.administrator:
@@ -3921,6 +3920,55 @@ async def __bind_perm_setup_and_sync():
         except Exception as e:
             log.warning(f"[sync] {g.id}: {e}")
 # ==================== END OVERRIDES ====================
+
+# ===== Global slash permission gate (strict) =====
+async def _get_timers_role_id(gid: int):
+    try:
+        return await _cfg_get_int(gid, "timers_role_id")
+    except Exception:
+        return None
+
+async def _global_slash_permission_gate(interaction: discord.Interaction):
+    # Admin bypass
+    if interaction.user.guild_permissions.administrator:
+        return True
+    if not interaction.guild:
+        raise app_commands.CheckFailure("Guild only.")
+    qn = (interaction.command.qualified_name if interaction.command else "") or ""
+    gid = interaction.guild.id
+    # Timers commands: role only
+    if qn.startswith("timers"):
+        rid = await _get_timers_role_id(gid)
+        if not rid:
+            raise app_commands.CheckFailure("Timers role not configured. Ask an admin to run /setup-timersrole.")
+        role = interaction.guild.get_role(int(rid))
+        if role and role in getattr(interaction.user, "roles", []):
+            return True
+        raise app_commands.CheckFailure("Missing required timers role.")
+    # All other slash commands: require Manage Messages
+    if interaction.user.guild_permissions.manage_messages:
+        return True
+    raise app_commands.CheckFailure("You need Manage Messages to use this command.")
+# ================================================
+
+@bot.listen("on_ready")
+async def __add_global_checks_and_errors():
+    try:
+        bot.tree.add_check(_global_slash_permission_gate)
+    except Exception as e:
+        try:
+            log.info(f"[checks] add_check failed or already added: {e}")
+        except Exception:
+            pass
+    try:
+        bot.tree.on_error = __on_app_command_error
+    except Exception as e:
+        try:
+            log.info(f"[checks] set on_error failed: {e}")
+        except Exception:
+            pass
+
+
 
 
 
