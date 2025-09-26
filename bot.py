@@ -4893,6 +4893,78 @@ async def __run_boot_offline_processing_v2():
         except Exception: pass
 # ==================== END SAFE ADDITIVE MERGE ====================
 
+# ==================== ALT LEVEL RENDER FIX + MAIN LINE STARS ====================
+# Make alt level parsing tolerant and star the whole main info line.
+import re as __re_lvlfix
+import json as __json_lvlfix
+
+def __coerce_lvl_v2(val):
+    try:
+        if val is None:
+            return None
+        if isinstance(val, int):
+            return val
+        s = str(val)
+        # Extract digits
+        m = __re_lvlfix.findall(r"\d+", s)
+        if not m:
+            return None
+        return int(m[0])
+    except Exception:
+        return None
+
+def __alts_line_v2(alts: list) -> str:
+    try:
+        if not alts: return "N/A"
+        lines = []
+        for i, a in enumerate(alts, 1):
+            nm = str(a.get("name","?"))[:32] if isinstance(a, dict) else "?"
+            raw_lv = None
+            if isinstance(a, dict):
+                raw_lv = a.get("level", a.get("lvl", a.get("lv")))
+            lv_i = __coerce_lvl_v2(raw_lv)
+            lv_txt = f"Lv {lv_i}" if isinstance(lv_i, int) else "Lv N/A"
+            cl = a.get("class","?") if isinstance(a, dict) else "?"
+            lines.append(f"{i}. {nm} • {lv_txt} • {cl}")
+        return "\n".join(lines) or "N/A"
+    except Exception:
+        return "N/A"
+
+def _build_roster_embed_v2(member: discord.Member, main_name: str, main_level: int, main_class: str, alts, tz_raw: str, tz_norm: str):
+    try:
+        e = discord.Embed(title=f"New Member: {member.display_name}", color=discord.Color.blurple())
+        # Main prominent; stars at start and end of full info
+        main_i = __coerce_lvl_v2(main_level)
+        main_level_safe = main_i if isinstance(main_i, int) else main_level
+        main_line = f"**✨ {main_name} • Lv {main_level_safe} • {main_class} ✨**"
+        e.add_field(name="Main", value=main_line, inline=False)
+        # Alts robust parsing whether list or json string
+        alt_list = []
+        try:
+            if isinstance(alts, str):
+                alt_list = __json_lvlfix.loads(alts) or []
+            elif isinstance(alts, list):
+                alt_list = alts
+        except Exception:
+            alt_list = []
+        e.add_field(name="Alts", value=__alts_line_v2(alt_list), inline=False)
+        tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        e.add_field(name="Timezone", value=tz or "N/A", inline=False)
+        e.set_footer(text="Welcome!")
+        return e
+    except Exception as _e:
+        try: log.warning(f"[embed_v2_fix] failed: {_e}")
+        except Exception: pass
+        return discord.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} • {main_level} • {main_class}")
+# Override to prefer this V2
+try:
+    _build_roster_embed  # noqa
+    _build_roster_embed = _build_roster_embed_v2
+except NameError:
+    _build_roster_embed = _build_roster_embed_v2
+# ==================== END FIX ====================
+
+
 
 
 
