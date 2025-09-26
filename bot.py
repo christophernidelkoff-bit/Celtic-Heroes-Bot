@@ -3270,7 +3270,6 @@ async def _lm_on_ready():
 # ------------------ End Lixing & Market Add-on ------------------
 
 # ==================== CONFIG HELPERS + SCHEMA (for setup commands) ====================
-# Provides set_* / get_* helpers and ensures required columns exist.
 async def _cfg_get_int(gid: int, field: str):
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(f"SELECT {field} FROM guild_config WHERE guild_id=?", (gid,))
@@ -3280,120 +3279,128 @@ async def _cfg_get_int(gid: int, field: str):
 async def _cfg_set_int(gid: int, field: str, val: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
-        # Ensure column exists
         c = await db.execute("PRAGMA table_info(guild_config)")
-        cols = [row[1] for row in await c.fetchall()]
+        cols = {row[1] for row in await c.fetchall()}
         if field not in cols:
-            await db.execute(f"ALTER TABLE guild_config ADD COLUMN {field} INTEGER DEFAULT NULL")
+            coltype = "TEXT" if field == "prefix" else "INTEGER"
+            await db.execute(f"ALTER TABLE guild_config ADD COLUMN {field} {coltype} DEFAULT NULL")
         await db.execute(
             f"INSERT INTO guild_config (guild_id,{field}) VALUES (?,?) "
             f"ON CONFLICT(guild_id) DO UPDATE SET {field}=excluded.{field}",
-            (gid, int(val))
-        )
-        await db.commit()
+            (gid, val)
+        ); await db.commit()
 
-# Named helpers expected by setup commands
 async def get_welcome_channel_id(gid: int): return await _cfg_get_int(gid, "welcome_channel_id")
-async def set_welcome_channel_id(gid: int, cid: int): return await _cfg_set_int(gid, "welcome_channel_id", cid)
+async def set_welcome_channel_id(gid: int, cid: int): return await _cfg_set_int(gid, "welcome_channel_id", int(cid))
 async def get_roster_channel_id(gid: int): return await _cfg_get_int(gid, "roster_channel_id")
-async def set_roster_channel_id(gid: int, cid: int): return await _cfg_set_int(gid, "roster_channel_id", cid)
+async def set_roster_channel_id(gid: int, cid: int): return await _cfg_set_int(gid, "roster_channel_id", int(cid))
 async def get_auto_member_role_id(gid: int): return await _cfg_get_int(gid, "auto_member_role_id")
-async def set_auto_member_role_id(gid: int, rid: int): return await _cfg_set_int(gid, "auto_member_role_id", rid)
+async def set_auto_member_role_id(gid: int, rid: int): return await _cfg_set_int(gid, "auto_member_role_id", int(rid))
 async def get_welcome_message_id(gid: int): return await _cfg_get_int(gid, "welcome_message_id")
-async def set_welcome_message_id(gid: int, mid: int): return await _cfg_set_int(gid, "welcome_message_id", mid)
-
-# Optional: ensure other columns that we write elsewhere exist
-async def _ensure_setup_columns():
-    needed = ["welcome_channel_id","roster_channel_id","auto_member_role_id","welcome_message_id",
-              "sub_channel_id","sub_ping_channel_id","heartbeat_channel_id","prefix","uptime_minutes","show_eta"]
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
-        c = await db.execute("PRAGMA table_info(guild_config)")
-        cols = {row[1] for row in await c.fetchall()}
-        for col in needed:
-            if col not in cols:
-                # prefix is TEXT; show_eta is INTEGER 0/1; others INTEGER
-                if col == "prefix":
-                    await db.execute("ALTER TABLE guild_config ADD COLUMN prefix TEXT DEFAULT NULL")
-                else:
-                    await db.execute(f"ALTER TABLE guild_config ADD COLUMN {col} INTEGER DEFAULT NULL")
-        await db.commit()
+async def set_welcome_message_id(gid: int, mid: int): return await _cfg_set_int(gid, "welcome_message_id", int(mid))
 
 @bot.listen("on_ready")
 async def __ensure_setup_columns_on_ready():
     try:
-        await _ensure_setup_columns()
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+            needed = ["welcome_channel_id","roster_channel_id","auto_member_role_id","welcome_message_id",
+                      "sub_channel_id","sub_ping_channel_id","heartbeat_channel_id","uptime_minutes"]
+            c = await db.execute("PRAGMA table_info(guild_config)")
+            cols = {row[1] for row in await c.fetchall()}
+            for col in needed:
+                if col not in cols:
+                    await db.execute(f"ALTER TABLE guild_config ADD COLUMN {col} INTEGER DEFAULT NULL")
+            await db.commit()
     except Exception as e:
         log.warning(f"[migrate] ensure_setup_columns failed: {e}")
 # ==================== END CONFIG HELPERS + SCHEMA ====================
-# ==================== SIMPLE SETUP COMMANDS (flat, per-guild) ====================
-from discord import app_commands as _ac2
 
-# Flat commands to avoid group registration issues. Add per guild on ready.
-@_ac2.command(name="setup-welcome", description="Set the channel that shows the Start Roster button")
-@_ac2.checks.has_permissions(manage_guild=True)
+# ==================== MINIMAL CONFIG COMMANDS (additive) ====================
+from discord import app_commands as _ac_cfg
+
+@_ac_cfg.command(name="setup-welcome", description="Set the channel that shows the Start Roster button")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
 async def setup_welcome(interaction: discord.Interaction, channel: discord.TextChannel):
     await set_welcome_channel_id(interaction.guild.id, channel.id)
     await interaction.response.send_message(f"Welcome channel set to {channel.mention}.", ephemeral=True)
     await _ensure_welcome_prompt(interaction.guild)
 
-@_ac2.command(name="setup-roster", description="Set the public roster channel")
-@_ac2.checks.has_permissions(manage_guild=True)
+@_ac_cfg.command(name="setup-roster", description="Set the public roster channel")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
 async def setup_roster(interaction: discord.Interaction, channel: discord.TextChannel):
     await set_roster_channel_id(interaction.guild.id, channel.id)
     await interaction.response.send_message(f"Roster channel set to {channel.mention}.", ephemeral=True)
 
-@_ac2.command(name="setup-role", description="Set the role granted on roster submit")
-@_ac2.checks.has_permissions(manage_roles=True)
+@_ac_cfg.command(name="setup-role", description="Set the role granted on roster submit")
+@_ac_cfg.checks.has_permissions(manage_roles=True)
 async def setup_role(interaction: discord.Interaction, role: discord.Role):
     await set_auto_member_role_id(interaction.guild.id, role.id)
     await interaction.response.send_message(f"Auto role set to {role.mention}.", ephemeral=True)
 
-@_ac2.command(name="setup-sub", description="Set subscription panels channel")
-@_ac2.checks.has_permissions(manage_guild=True)
-async def setup_sub(interaction: discord.Interaction, channel: discord.TextChannel):
-    await _cfg_set_int(interaction.guild.id, "sub_channel_id", channel.id)
-    await interaction.response.send_message(f"Subscription channel set to {channel.mention}.", ephemeral=True)
+@_ac_cfg.command(name="welcome-post", description="Post or refresh the Start Roster button message in the welcome channel")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
+async def welcome_post_cmd(interaction: discord.Interaction):
+    await _ensure_welcome_prompt(interaction.guild)
+    ch_id = await get_welcome_channel_id(interaction.guild.id)
+    ch = interaction.guild.get_channel(ch_id) if ch_id else None
+    if ch:
+        await interaction.response.send_message(f"Welcome prompt ensured in {ch.mention}.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Welcome channel not set. Run /setup-welcome first.", ephemeral=True)
 
-@_ac2.command(name="setup-subping", description="Set subscriber ping channel")
-@_ac2.checks.has_permissions(manage_guild=True)
-async def setup_subping(interaction: discord.Interaction, channel: discord.TextChannel):
-    await _cfg_set_int(interaction.guild.id, "sub_ping_channel_id", channel.id)
-    await interaction.response.send_message(f"Subscriber ping channel set to {channel.mention}.", ephemeral=True)
+@_ac_cfg.command(name="start-roster", description="Open the roster intake (ephemeral) in the welcome channel")
+async def start_roster_cmd(interaction: discord.Interaction):
+    gid = interaction.guild.id if interaction.guild else None
+    if not gid:
+        return await interaction.response.send_message("Guild not found.", ephemeral=True)
+    wcid = await get_welcome_channel_id(gid)
+    if not wcid:
+        return await interaction.response.send_message("Welcome channel not set. Run /setup-welcome first.", ephemeral=True)
+    if not isinstance(interaction.channel, discord.TextChannel) or interaction.channel.id != wcid:
+        ch = interaction.guild.get_channel(wcid)
+        return await interaction.response.send_message(f"Run this in {ch.mention}.", ephemeral=True)
+    view = RosterStartView()
+    await interaction.response.send_message("Let's get your roster set up.", ephemeral=True, view=view)
 
-@_ac2.command(name="setup-heartbeat", description="Set heartbeat channel")
-@_ac2.checks.has_permissions(manage_guild=True)
-async def setup_heartbeat(interaction: discord.Interaction, channel: discord.TextChannel):
-    await _cfg_set_int(interaction.guild.id, "heartbeat_channel_id", channel.id)
-    await interaction.response.send_message(f"Heartbeat channel set to {channel.mention}.", ephemeral=True)
-
-@_ac2.command(name="setup-prefix", description="Set text prefix for prefix commands")
-@_ac2.checks.has_permissions(manage_guild=True)
-async def setup_prefix(interaction: discord.Interaction, prefix: str):
+@_ac_cfg.command(name="roster-repost", description="Repost a user's roster card to the roster channel")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
+async def roster_repost_cmd(interaction: discord.Interaction, member: discord.Member | None = None):
+    gid = interaction.guild.id if interaction.guild else None
+    if not gid:
+        return await interaction.response.send_message("Guild not found.", ephemeral=True)
+    user = member or interaction.user
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO guild_config (guild_id,prefix) VALUES (?,?) "
-            "ON CONFLICT(guild_id) DO UPDATE SET prefix=excluded.prefix",
-            (interaction.guild.id, prefix)
-        ); await db.commit()
-    await interaction.response.send_message(f"Prefix set to `{prefix}`.", ephemeral=True)
+        c = await db.execute("SELECT main_name, main_level, main_class, alts_json, timezone_raw, timezone_norm FROM roster_members WHERE guild_id=? AND user_id=?", (gid, user.id))
+        row = await c.fetchone()
+    if not row:
+        return await interaction.response.send_message("No roster data found for that user.", ephemeral=True)
+    main_name, main_level, main_class, alts_json, tz_raw, tz_norm = row
+    try:
+        alts = json.loads(alts_json) if isinstance(alts_json, str) else (alts_json or [])
+    except Exception:
+        alts = []
+    rcid = await get_roster_channel_id(gid)
+    if not rcid:
+        return await interaction.response.send_message("Roster channel not set. Run /setup-roster first.", ephemeral=True)
+    ch = interaction.guild.get_channel(rcid)
+    if not ch or not can_send(ch):
+        return await interaction.response.send_message("I lack permission to post in the roster channel.", ephemeral=True)
+    e = _build_roster_embed(user, main_name, int(main_level), main_class, alts, tz_raw, tz_norm)
+    await ch.send(embed=e)
+    await interaction.response.send_message(f"Reposted in {ch.mention}.", ephemeral=True)
 
-@_ac2.command(name="setup-uptime", description="Set default uptime minutes for timers")
-@_ac2.checks.has_permissions(manage_guild=True)
-async def setup_uptime(interaction: discord.Interaction, minutes: int):
-    await _cfg_set_int(interaction.guild.id, "uptime_minutes", minutes)
-    await interaction.response.send_message(f"Default uptime set to {minutes} minutes.", ephemeral=True)
+@_ac_cfg.command(name="setup-uptime", description="Set heartbeat channel and interval in minutes (use 0 to disable)")
+@_ac_cfg.checks.has_permissions(manage_guild=True)
+async def setup_uptime(interaction: discord.Interaction, channel: discord.TextChannel, minutes: int):
+    await _cfg_set_int(interaction.guild.id, "heartbeat_channel_id", channel.id)
+    await _cfg_set_int(interaction.guild.id, "uptime_minutes", max(0, int(minutes)))
+    await interaction.response.send_message(f"Heartbeat channel set to {channel.mention}; interval {minutes} minutes.", ephemeral=True)
 
-@_ac2.command(name="setup-showeta", description="Toggle ETA line in /timers embeds")
-@_ac2.checks.has_permissions(manage_guild=True)
-async def setup_showeta(interaction: discord.Interaction, show: bool):
-    await _cfg_set_int(interaction.guild.id, "show_eta", 1 if show else 0)
-    await interaction.response.send_message(f"Show ETA is now {'on' if show else 'off'}.", ephemeral=True)
-
-# On-ready binder: attach the flat commands per-guild and sync.
+# Bind per guild and sync
 @bot.listen("on_ready")
-async def __bind_flat_setup_commands_and_sync():
-    cmds = [setup_welcome, setup_roster, setup_role, setup_sub, setup_subping, setup_heartbeat, setup_prefix, setup_uptime, setup_showeta]
+async def __bind_config_commands_and_sync():
+    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime]
     for g in bot.guilds:
         for cmd in cmds:
             try:
@@ -3402,10 +3409,10 @@ async def __bind_flat_setup_commands_and_sync():
                 pass
         try:
             await bot.tree.sync(guild=g)
-            log.info(f"[sync] Flat setup commands synced for guild {g.id}")
+            log.info(f"[sync] Config commands synced for guild {g.id}")
         except Exception as e:
             log.warning(f"[sync] {g.id}: {e}")
-# ==================== END SIMPLE SETUP COMMANDS ====================
+# ==================== END MINIMAL CONFIG COMMANDS ====================
 
 
 
