@@ -4413,6 +4413,487 @@ async def __bind_player_level_cmds():
             pass
 # ===========================================
 
+# ==================== SAFE ADDITIVE MERGE (V2 components, no removals) ====================
+import json as __json_v2
+import re as __re_v2
+import urllib.parse as __urlparse_v2
+from discord import app_commands as __ac_v2
+
+def __is_valid_http_url_v2(url: str) -> bool:
+    try:
+        u = __urlparse_v2.urlparse((url or "").strip())
+        return u.scheme in ("http", "https") and bool(u.netloc)
+    except Exception:
+        return False
+
+def __alts_line_v2(alts: list) -> str:
+    try:
+        if not alts: return "N/A"
+        lines = []
+        for i, a in enumerate(alts, 1):
+            nm = str(a.get("name","?"))[:32]
+            try:
+                lv = int(a.get("level"))
+                lv_txt = f"Lv {lv}"
+            except Exception:
+                lv_txt = "Lv N/A"
+            cl = a.get("class","?")
+            lines.append(f"{i}. {nm} • {lv_txt} • {cl}")
+        return "\n".join(lines) or "N/A"
+    except Exception:
+        return "N/A"
+
+async def __cfg_get_text_v2(gid: int, field: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+        c = await db.execute("PRAGMA table_info(guild_config)")
+        cols = {row[1] for row in await c.fetchall()}
+        if field not in cols:
+            await db.execute(f"ALTER TABLE guild_config ADD COLUMN {field} TEXT DEFAULT NULL")
+            await db.commit()
+        c2 = await db.execute(f"SELECT {field} FROM guild_config WHERE guild_id=?", (gid,))
+        r = await c2.fetchone()
+        return (r[0] if r else None)
+
+async def __cfg_set_text_v2(gid: int, field: str, val: str | None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+        c = await db.execute("PRAGMA table_info(guild_config)")
+        cols = {row[1] for row in await c.fetchall()}
+        if field not in cols:
+            await db.execute(f"ALTER TABLE guild_config ADD COLUMN {field} TEXT DEFAULT NULL")
+        await db.execute(
+            f"INSERT INTO guild_config (guild_id,{field}) VALUES (?,?) "
+            f"ON CONFLICT(guild_id) DO UPDATE SET {field}=excluded.{field}",
+            (gid, val)
+        ); await db.commit()
+
+def _build_roster_embed_v2(member: discord.Member, main_name: str, main_level: int, main_class: str, alts, tz_raw: str, tz_norm: str):
+    try:
+        e = discord.Embed(title=f"New Member: {member.display_name}", color=discord.Color.blurple())
+        try: main_level_safe = int(main_level)
+        except Exception: main_level_safe = main_level
+        main_line = f"**✨ {main_name} ✨** • **Lv {main_level_safe}** • {main_class}"
+        e.add_field(name="Main", value=main_line, inline=False)
+        alt_list = []
+        try:
+            if isinstance(alts, str):
+                alt_list = __json_v2.loads(alts) or []
+            elif isinstance(alts, list):
+                alt_list = alts
+        except Exception:
+            alt_list = []
+        e.add_field(name="Alts", value=__alts_line_v2(alt_list), inline=False)
+        tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        e.add_field(name="Timezone", value=tz or "N/A", inline=False)
+        e.set_footer(text="Welcome!")
+        return e
+    except Exception as _e:
+        try: log.warning(f"[embed_v2] failed: {_e}")
+        except Exception: pass
+        return discord.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} • {main_level} • {main_class}")
+
+try:
+    _build_roster_embed  # noqa
+    _build_roster_embed = _build_roster_embed_v2
+except NameError:
+    _build_roster_embed = _build_roster_embed_v2
+
+async def decorate_embed_with_stars_v2(e: discord.Embed, guild_id: int):
+    try:
+        gif = await __cfg_get_text_v2(guild_id, "roster_star_gif")
+    except Exception:
+        gif = None
+    if isinstance(gif, str) and __is_valid_http_url_v2(gif):
+        try:
+            e.set_thumbnail(url=gif)
+        except Exception:
+            pass
+    return e
+
+try:
+    decorate_embed_with_stars  # noqa
+    decorate_embed_with_stars = decorate_embed_with_stars_v2
+except NameError:
+    decorate_embed_with_stars = decorate_embed_with_stars_v2
+
+_ALLOWED_CLASSES_V2 = ["Ranger","Rogue","Warrior","Mage","Druid"]
+
+def __norm_class_v2(s: str) -> str:
+    t = (s or "").strip().title()
+    return t if t in _ALLOWED_CLASSES_V2 else _ALLOWED_CLASSES_V2[0]
+
+def __parse_tz_v2(tz: str):
+    raw = (tz or "").strip()
+    norm = ""
+    m = __re_v2.match(r"^(?:UTC)?\s*([+-]?)(\d{1,2})(?::?(\d{2}))?$", raw)
+    if "/" in raw and len(raw) <= 64:
+        norm = raw
+    elif m:
+        sign = -1 if m.group(1) == "-" else 1
+        hh = int(m.group(2)); mm = int(m.group(3) or 0)
+        if 0 <= hh <= 14 and 0 <= mm < 60:
+            norm = f"UTC{'-' if sign<0 else '+'}{hh:02d}:{mm:02d}"
+    return raw or "N/A", norm
+
+class AltClassSelectV2(discord.ui.Select):
+    def __init__(self):
+        opts = [discord.SelectOption(label=c, value=c) for c in _ALLOWED_CLASSES_V2]
+        super().__init__(placeholder="Select alt class", min_values=1, max_values=1, options=opts)
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_alt_class = self.values[0]
+        for ch in self.view.children:
+            if isinstance(ch, discord.ui.Button) and getattr(ch, "custom_id","") == "add_alt_btn":
+                ch.disabled = False
+                ch.style = discord.ButtonStyle.primary
+                ch.label = f"Add Alt — {self.view.selected_alt_class}"
+        hint = "\n\nNext: press **Add Alt** to enter name and level, or **Join the server!** to finish."
+        await interaction.response.edit_message(content=self.view._summary_text()+hint, view=self.view)
+
+class AltModalV2(discord.ui.Modal, title="Add Alt"):
+    alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
+    alt_level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3, placeholder="e.g., 120")
+    def __init__(self, parent_view: "RosterConfirmViewV2"):
+        super().__init__(timeout=300); self.parent_view = parent_view
+    async def on_submit(self, interaction: discord.Interaction):
+        name = str(self.alt_name).strip()
+        lvl_s = str(self.alt_level).strip()
+        lvl_i = None
+        if lvl_s:
+            try: lvl_i = int(__re_v2.sub(r"[^0-9]","",lvl_s))
+            except Exception: lvl_i = None
+        if lvl_i is not None and not (1 <= lvl_i <= 250):
+            return await interaction.response.send_message("Alt level must be 1–250.", ephemeral=True)
+        if not name and lvl_i is None:
+            return await interaction.response.send_message(self.parent_view._summary_text(), ephemeral=True, view=self.parent_view)
+        cls = self.parent_view.selected_alt_class or "Ranger"
+        alt = {"class": __norm_class_v2(cls)}
+        if name: alt["name"] = name[:32]
+        if lvl_i is not None: alt["level"] = lvl_i
+        mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
+        new_view = RosterConfirmViewV2(mname, mlvl, mcls, list(alts or []) + [alt], tz_raw, tz_norm)
+        await interaction.response.send_message(new_view._summary_text(), ephemeral=True, view=new_view)
+
+class RosterConfirmViewV2(discord.ui.View):
+    def __init__(self, main_name: str, lvl: int, cls: str, alts: list, tz_raw: str, tz_norm: str):
+        super().__init__(timeout=900)
+        self.payload = (main_name, lvl, cls, alts or [], tz_raw, tz_norm)
+        self.selected_alt_class = None
+        self.add_item(AltClassSelectV2())
+    def _summary_text(self) -> str:
+        mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
+        return (
+            f"Step 2/2 — Review:\n"
+            f"**Main:** {mname} • {mlvl} • {mcls}\n"
+            f"**Alts:** {__alts_line_v2(alts)}\n"
+            f"**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        )
+    @discord.ui.button(label="Add Alt", style=discord.ButtonStyle.secondary, custom_id="add_alt_btn", disabled=True)
+    async def add_alt(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_alt_class:
+            return await interaction.response.send_message("Pick an alt class from the dropdown first.", ephemeral=True)
+        await interaction.response.send_modal(AltModalV2(self))
+    @discord.ui.button(label="Join the server!", style=discord.ButtonStyle.success)
+    async def join_server(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild; user = interaction.user
+        if not guild:
+            return await interaction.response.send_message("Guild only.", ephemeral=True)
+        gid = guild.id
+        try:
+            await _upsert_roster(gid, user.id, *self.payload)
+        except Exception as e:
+            log.warning(f"[roster] upsert failed: {e}")
+            return await interaction.response.send_message("Could not save your info.", ephemeral=True)
+        rid = await get_auto_member_role_id(gid)
+        if rid:
+            role = guild.get_role(rid)
+            if role:
+                try: await user.add_roles(role, reason="Roster intake complete")
+                except Exception as e: log.warning(f"[roster] role grant failed: {e}")
+        try:
+            row = await _roster_load_v2(gid, user.id)
+            if row:
+                await _roster_edit_or_post_v2(guild, user, row)
+        except Exception as e:
+            log.warning(f"[roster] post/edit failed: {e}")
+        await interaction.response.edit_message(content="You're set. Welcome.", view=None)
+
+def __patch_start_roster_view_v2():
+    RSV = globals().get("RosterStartView")
+    if RSV is None:
+        class RosterStartView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=600); self.selected_class=None
+                opts = [discord.SelectOption(label=c, value=c) for c in _ALLOWED_CLASSES_V2]
+                sel = discord.ui.Select(placeholder="Step 1/2 — pick your MAIN class", min_values=1, max_values=1, options=opts)
+                async def sel_cb(interaction: discord.Interaction):
+                    self.selected_class = sel.values[0]
+                    await interaction.response.edit_message(content=f"Main class selected: **{self.selected_class}**\nNext: press **Continue**.", view=self)
+                sel.callback = sel_cb; self.add_item(sel)
+            @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
+            async def _continue(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not self.selected_class:
+                    return await interaction.response.send_message("Pick a main class first.", ephemeral=True)
+                await interaction.response.send_modal(RosterModalV2(self.selected_class))
+        globals()["RosterStartView"] = RosterStartView
+        return
+    # If class exists, try to patch its continue handler to our modal
+    try:
+        def _patched_continue(self, interaction: discord.Interaction, button: discord.ui.Button):
+            return interaction.response.send_modal(RosterModalV2(getattr(self,"selected_class",None) or "Ranger"))
+        setattr(RSV, "_continue", _patched_continue)
+    except Exception:
+        pass
+
+class RosterModalV2(discord.ui.Modal, title="Start Roster — Step 1/2"):
+    main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
+    main_level = discord.ui.TextInput(label="Main level (1–250)", placeholder="215", required=True, max_length=3)
+    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
+    def __init__(self, selected_class: str):
+        super().__init__(timeout=600); self.selected_class = selected_class
+    async def on_submit(self, interaction: discord.Interaction):
+        try: lvl = int(str(self.main_level))
+        except Exception: return await interaction.response.send_message("Level must be a number.", ephemeral=True)
+        if not (1 <= lvl <= 250):
+            return await interaction.response.send_message("Level must be between 1 and 250.", ephemeral=True)
+        main_name = str(self.main_name).strip()
+        cls = __norm_class_v2(self.selected_class)
+        tz_raw, tz_norm = __parse_tz_v2(str(self.timezone))
+        view = RosterConfirmViewV2(main_name, lvl, cls, [], tz_raw, tz_norm)
+        hint = "\n\nStep 2/2 — Optional alts: pick a class, press **Add Alt**, or press **Join the server!** to finish."
+        await interaction.response.send_message(view._summary_text()+hint, ephemeral=True, view=view)
+
+__patch_start_roster_view_v2()
+
+async def _ensure_roster_msg_id_column_v2():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS roster_members (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            main_name TEXT NOT NULL,
+            main_level INTEGER NOT NULL,
+            main_class TEXT NOT NULL,
+            alts_json TEXT NOT NULL,
+            timezone_raw TEXT NOT NULL,
+            timezone_norm TEXT,
+            submitted_at INTEGER,
+            updated_at INTEGER,
+            PRIMARY KEY (guild_id, user_id)
+        )""")
+        c = await db.execute("PRAGMA table_info(roster_members)"); cols = {row[1] for row in await c.fetchall()}
+        if "roster_msg_id" not in cols:
+            await db.execute("ALTER TABLE roster_members ADD COLUMN roster_msg_id INTEGER DEFAULT NULL")
+        await db.commit()
+
+@bot.listen("on_ready")
+async def __migrate_roster_msg_id_col_v2():
+    try: await _ensure_roster_msg_id_column_v2()
+    except Exception as e:
+        try: log.warning(f"[migrate_v2] roster_msg_id: {e}")
+        except Exception: pass
+
+async def _roster_load_v2(gid: int, uid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT main_name, main_level, main_class, alts_json, timezone_raw, timezone_norm, roster_msg_id FROM roster_members WHERE guild_id=? AND user_id=?", (gid, uid))
+        return await c.fetchone()
+
+async def _roster_save_embed_message_id_v2(gid: int, uid: int, msg_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE roster_members SET roster_msg_id=? WHERE guild_id=? AND user_id=?", (int(msg_id), gid, uid))
+        await db.commit()
+
+async def _roster_edit_or_post_v2(guild: discord.Guild, member: discord.Member, row):
+    main_name, main_level, main_class, alts_json, tz_raw, tz_norm, roster_msg_id = row
+    try:
+        alts = __json_v2.loads(alts_json) if isinstance(alts_json, str) else (alts_json or [])
+    except Exception:
+        alts = []
+    e = _build_roster_embed(member, main_name, int(main_level), main_class, alts, tz_raw, tz_norm)
+    await decorate_embed_with_stars(e, guild.id)
+    rcid = await get_roster_channel_id(guild.id); ch = guild.get_channel(rcid) if rcid else None
+    if not ch or not can_send(ch):
+        raise RuntimeError("Roster channel not configured or no permission.")
+    if roster_msg_id:
+        try:
+            msg = await ch.fetch_message(int(roster_msg_id))
+            await msg.edit(embed=e)
+            return msg
+        except Exception:
+            pass
+    msg = await ch.send(embed=e)
+    await _roster_save_embed_message_id_v2(guild.id, member.id, msg.id)
+    return msg
+
+@__ac_v2.command(name="my-level-main", description="Update your main level (1–250)")
+async def my_level_main_v2(interaction: discord.Interaction, level: int):
+    if not interaction.guild:
+        return await interaction.response.send_message("Guild only.", ephemeral=True)
+    if not (1 <= level <= 250):
+        return await interaction.response.send_message("Level must be 1–250.", ephemeral=True)
+    gid = interaction.guild.id; uid = interaction.user.id
+    row = await _roster_load_v2(gid, uid)
+    if not row:
+        return await interaction.response.send_message("No roster on file. Use the welcome intake first.", ephemeral=True)
+    main_name, main_level, main_class, alts_json, tz_raw, tz_norm, roster_msg_id = row
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE roster_members SET main_level=?, updated_at=? WHERE guild_id=? AND user_id=?", (int(level), now_ts(), gid, uid))
+        await db.commit()
+    row = (main_name, int(level), main_class, alts_json, tz_raw, tz_norm, roster_msg_id)
+    try:
+        await _roster_edit_or_post_v2(interaction.guild, interaction.user, row)
+        await interaction.response.send_message(f"Main level updated to {level}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Saved. Could not update the roster message: {e}", ephemeral=True)
+
+@__ac_v2.command(name="my-level-alt", description="Update one alt level by slot number (1..N)")
+async def my_level_alt_v2(interaction: discord.Interaction, slot: int, level: int):
+    if not interaction.guild:
+        return await interaction.response.send_message("Guild only.", ephemeral=True)
+    if slot < 1 or not (1 <= level <= 250):
+        return await interaction.response.send_message("Usage: slot>=1 and level 1–250.", ephemeral=True)
+    gid = interaction.guild.id; uid = interaction.user.id
+    row = await _roster_load_v2(gid, uid)
+    if not row:
+        return await interaction.response.send_message("No roster on file. Use the welcome intake first.", ephemeral=True)
+    main_name, main_level, main_class, alts_json, tz_raw, tz_norm, roster_msg_id = row
+    try:
+        alts = __json_v2.loads(alts_json) if isinstance(alts_json, str) else (alts_json or [])
+    except Exception:
+        alts = []
+    if slot > len(alts):
+        return await interaction.response.send_message(f"You only have {len(alts)} alts saved.", ephemeral=True)
+    alts[slot-1]["level"] = int(level)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE roster_members SET alts_json=?, updated_at=? WHERE guild_id=? AND user_id=?", (__json_v2.dumps(alts), now_ts(), gid, uid))
+        await db.commit()
+    row = (main_name, main_level, main_class, __json_v2.dumps(alts), tz_raw, tz_norm, roster_msg_id)
+    try:
+        await _roster_edit_or_post_v2(interaction.guild, interaction.user, row)
+        await interaction.response.send_message(f"Alt #{slot} level updated to {level}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Saved. Could not update the roster message: {e}", ephemeral=True)
+
+@bot.listen("on_ready")
+async def __bind_player_level_cmds_v2():
+    for g in bot.guilds:
+        for cmd in (my_level_main_v2, my_level_alt_v2):
+            try: bot.tree.add_command(cmd, guild=g)
+            except Exception: pass
+        try: await bot.tree.sync(guild=g)
+        except Exception: pass
+
+async def _get_timers_role_id_v2(gid: int):
+    try: return await _cfg_get_int(gid, "timers_role_id")
+    except Exception: return None
+
+async def _global_slash_permission_gate_v2(interaction: discord.Interaction):
+    if interaction.user.guild_permissions.administrator:
+        return True
+    if not interaction.guild:
+        raise app_commands.CheckFailure("Guild only.")
+    qn = (interaction.command.qualified_name if interaction.command else "") or ""
+    if qn in ("my-level-main","my-level-alt"):
+        return True
+    if qn.startswith("timers"):
+        rid = await _get_timers_role_id_v2(interaction.guild.id)
+        if not rid:
+            raise app_commands.CheckFailure("Timers role not configured. Ask an admin to run /setup-timersrole.")
+        role = interaction.guild.get_role(int(rid))
+        if role and role in getattr(interaction.user, "roles", []):
+            return True
+        raise app_commands.CheckFailure("Missing required timers role.")
+    if interaction.user.guild_permissions.manage_messages:
+        return True
+    raise app_commands.CheckFailure("You need Manage Messages to use this command.")
+
+@bot.listen("on_ready")
+async def __add_global_checks_and_errors_v2():
+    try: bot.tree.add_check(_global_slash_permission_gate_v2)
+    except Exception: pass
+    async def __on_app_command_error_v2(interaction: discord.Interaction, error: app_commands.AppCommandError):
+        msg = str(error) or "Command failed."
+        try: await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            try: await interaction.followup.send(msg, ephemeral=True)
+            except Exception: pass
+    try: bot.tree.on_error = __on_app_command_error_v2
+    except Exception: pass
+
+@__ac_v2.command(name="setup-stargif", description="Set a GIF URL for roster thumbnail stars, or 'clear' to unset")
+@__ac_v2.checks.has_permissions(manage_guild=True)
+async def setup_stargif_v2(interaction: discord.Interaction, url: str):
+    if url.lower().strip() == "clear":
+        await __cfg_set_text_v2(interaction.guild.id, "roster_star_gif", None)
+        return await interaction.response.send_message("Star GIF cleared.", ephemeral=True)
+    if not __is_valid_http_url_v2(url):
+        return await interaction.response.send_message("Invalid URL. Provide an http(s) image/GIF URL, or 'clear'.", ephemeral=True)
+    await __cfg_set_text_v2(interaction.guild.id, "roster_star_gif", url.strip())
+    await interaction.response.send_message("Star GIF set.", ephemeral=True)
+
+@bot.listen("on_ready")
+async def __bind_stargif_v2():
+    for g in bot.guilds:
+        try: bot.tree.add_command(setup_stargif_v2, guild=g)
+        except Exception: pass
+    for g in bot.guilds:
+        try: await bot.tree.sync(guild=g)
+        except Exception: pass
+
+async def boot_offline_processing_v2():
+    boot = now_ts()
+    off_since = None
+    try:
+        val = await meta_get("offline_since")
+        if val and str(val).isdigit():
+            off_since = int(val)
+    except Exception: pass
+    if off_since is None:
+        try:
+            last_tick = await meta_get("last_tick_ts")
+            if last_tick and str(last_tick).isdigit():
+                last_tick = int(last_tick)
+                if boot - last_tick > CHECK_INTERVAL_SECONDS * 2:
+                    off_since = last_tick
+        except Exception: pass
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("SELECT id,guild_id,channel_id,name,next_spawn_ts,category FROM bosses")
+        rows = [(int(bid), int(gid), ch, nm, int(ts), cat) for bid, gid, ch, nm, ts, cat in await c.fetchall()]
+    if off_since is not None:
+        try:
+            for bid, gid, ch_id, name, ts, cat in rows:
+                if off_since <= ts <= boot:
+                    guild = bot.get_guild(gid)
+                    ch = await resolve_announce_channel(gid, ch_id, cat) if guild else None
+                    if ch and can_send(ch):
+                        try:
+                            ago = human_ago(boot - ts)
+                            await ch.send(f":zzz: While I was offline, **{name}** spawned ({ago}).")
+                        except Exception: pass
+                    try: await send_subscription_ping(gid, bid, phase="window", boss_name=name)
+                    except Exception: pass
+            dt = max(0, boot - int(off_since))
+            if dt > 0:
+                async with aiosqlite.connect(DB_PATH) as db:
+                    for bid, _, _, _, ts, _ in rows:
+                        if ts > boot:
+                            new_ts = ts - dt
+                            if new_ts < boot: new_ts = boot
+                            await db.execute("UPDATE bosses SET next_spawn_ts=? WHERE id=?", (int(new_ts), int(bid)))
+                    await db.commit()
+            await meta_set("offline_since", "")
+        except Exception as e:
+            try: log.warning(f"[boot_v2] catch-up failed: {e}")
+            except Exception: pass
+
+@bot.listen("on_ready")
+async def __run_boot_offline_processing_v2():
+    try: await boot_offline_processing_v2()
+    except Exception as e:
+        try: log.warning(f"[boot_v2] failed: {e}")
+        except Exception: pass
+# ==================== END SAFE ADDITIVE MERGE ====================
+
+
 
 
 
