@@ -4158,6 +4158,128 @@ class RosterConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="You're set. Welcome.", view=None)
 # ==================== END POLISH ====================
 
+# ==================== CLEAN ALT FLOW + SAFE STAR GIF ====================
+import urllib.parse as _urlparse
+
+def _is_valid_http_url(url: str) -> bool:
+    try:
+        u = _urlparse.urlparse(url.strip())
+        return u.scheme in ("http", "https") and bool(u.netloc)
+    except Exception:
+        return False
+
+# Override RosterStartView to show step text
+class RosterStartView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.selected_class = None
+        opts = [discord.SelectOption(label=c, value=c) for c in ["Ranger","Rogue","Warrior","Mage","Druid"]]
+        sel = discord.ui.Select(placeholder="Step 1/2 — pick your MAIN class", min_values=1, max_values=1, options=opts)
+        async def sel_cb(interaction: discord.Interaction):
+            self.selected_class = sel.values[0]
+            await interaction.response.edit_message(content=f"Main class selected: **{self.selected_class}**\nNext: press **Continue**.", view=self)
+        sel.callback = sel_cb
+        self.add_item(sel)
+
+    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
+    async def _continue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_class:
+            return await interaction.response.send_message("Pick a main class first.", ephemeral=True)
+        await interaction.response.send_modal(RosterModal(self.selected_class))
+
+# Force our RosterModal without any alts textbox
+class RosterModal(discord.ui.Modal, title="Start Roster — Step 1/2"):
+    main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
+    main_level = discord.ui.TextInput(label="Main level (1–250)", placeholder="215", required=True, max_length=3)
+    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
+
+    def __init__(self, selected_class: str):
+        super().__init__(timeout=600)
+        self.selected_class = selected_class
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Validate level
+        try:
+            lvl = int(str(self.main_level))
+        except Exception:
+            return await interaction.response.send_message("Level must be a number.", ephemeral=True)
+        if not (1 <= lvl <= 250):
+            return await interaction.response.send_message("Level must be between 1 and 250.", ephemeral=True)
+
+        main_name = str(self.main_name).strip()
+        cls = _norm_class(self.selected_class)
+        tz_raw, tz_norm = _parse_timezone(str(self.timezone))
+
+        view = RosterConfirmView(main_name, lvl, cls, [], tz_raw, tz_norm)
+        hint = "\n\nStep 2/2 — Optional alts: pick a class, press **Add Alt**, or press **Join the server!** to finish."
+        await interaction.response.send_message(view._summary_text() + hint, ephemeral=True, view=view)
+
+# Improve AltClassSelect callback to enable the button and show hint
+for cls in list(globals().values()):
+    if isinstance(cls, type) and cls.__name__ == "AltClassSelect":
+        async def _cb(self, interaction: discord.Interaction):
+            self.view.selected_alt_class = self.values[0]
+            # Enable Add Alt button if present
+            for ch in self.view.children:
+                if isinstance(ch, discord.ui.Button) and getattr(ch, "custom_id", "") == "add_alt_btn":
+                    ch.disabled = False
+                    ch.style = discord.ButtonStyle.primary
+                    ch.label = f"Add Alt — {self.view.selected_alt_class}"
+            hint = "\n\nNext: press **Add Alt** to enter name and level, or **Join the server!** to finish."
+            await interaction.response.edit_message(content=self.view._summary_text() + hint, view=self.view)
+        cls.callback = _cb
+        break
+
+# Harden star decoration: validate URL before applying. If invalid, skip images.
+async def decorate_embed_with_stars(e: discord.Embed, guild_id: int):
+    gif = None
+    try:
+        gif = await _cfg_get_text(guild_id, "roster_star_gif")
+    except Exception:
+        gif = None
+    if isinstance(gif, str) and _is_valid_http_url(gif):
+        try:
+            e.set_thumbnail(url=gif)     # top-right
+            e.set_author(name=" ", icon_url=gif)  # top-left (author requires name)
+        except Exception:
+            pass
+    # Always add unicode sparkles in the title
+    try:
+        if e.title and not e.title.startswith("✨"):
+            e.title = f"✨ {e.title} ✨"
+    except Exception:
+        pass
+    return e
+
+# Validate /setup-stargif input before saving
+from discord import app_commands as _ac_starfix
+@_ac_starfix.command(name="setup-stargif", description="Set a GIF URL to decorate roster embeds, or 'clear' to unset")
+@_ac_starfix.checks.has_permissions(manage_guild=True)
+async def setup_stargif(interaction: discord.Interaction, url: str):
+    if url.lower().strip() == "clear":
+        await _cfg_set_text(interaction.guild.id, "roster_star_gif", None)
+        return await interaction.response.send_message("Star GIF cleared.", ephemeral=True)
+    if not _is_valid_http_url(url):
+        return await interaction.response.send_message("Invalid URL. Provide an http(s) URL to an image/GIF, or 'clear'.", ephemeral=True)
+    await _cfg_set_text(interaction.guild.id, "roster_star_gif", url.strip())
+    await interaction.response.send_message("Star GIF set.", ephemeral=True)
+
+# Bind the command once per guild
+@bot.listen("on_ready")
+async def __bind_setup_stargif_once():
+    for g in bot.guilds:
+        try:
+            bot.tree.add_command(setup_stargif, guild=g)
+        except Exception:
+            pass
+    try:
+        for g in bot.guilds:
+            await bot.tree.sync(guild=g)
+    except Exception:
+        pass
+# ==================== END CLEAN ALT FLOW + SAFE STAR GIF ====================
+
+
 
 
 
