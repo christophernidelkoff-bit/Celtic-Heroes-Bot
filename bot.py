@@ -3288,6 +3288,37 @@ async def _sync(ctx: commands.Context):
     except Exception as e:
         await ctx.reply(f"Sync failed: {e}", mention_author=False)
 
+# -------------------- Diagnostics & Force Registration --------------------
+# Adds /ping and !ping. Force-adds the roster group per guild before syncing.
+from discord import app_commands as __app_cmds
+
+@bot.listen("on_ready")
+async def __force_register_commands_on_ready():
+    for g in bot.guilds:
+        try:
+            # If the roster group isn't present for this guild, add it explicitly as a guild command.
+            existing = {cmd.name for cmd in bot.tree.get_commands(guild=g)}
+            if "roster" not in existing:
+                try:
+                    bot.tree.add_command(roster_group, guild=g)
+                    log.info(f"[force-add] roster group added to guild {g.id}")
+                except Exception as e:
+                    log.info(f"[force-add] roster already present on {g.id} or add failed: {e}")
+            await bot.tree.sync(guild=g)
+            log.info(f"[force-sync] synced guild {g.id}")
+        except Exception as e:
+            log.warning(f"[force-sync] {g.id}: {e}")
+
+# Simple health checks
+@bot.command(name="ping")
+async def _ping_prefix(ctx: commands.Context):
+    await ctx.reply("pong", mention_author=False)
+
+@__app_cmds.command(name="ping", description="Health check")
+async def _ping_slash(interaction: discord.Interaction):
+    await interaction.response.send_message("pong", ephemeral=True)
+
+
 
 if __name__ == "__main__":
     asyncio.run(main())
