@@ -12,35 +12,39 @@
 
 from __future__ import annotations
 
-# ===================== V7 DEDUPE SHIM + MOBILE LAYOUT SAFEGUARDS (inserted) =====================
-# Provide globals expected by legacy dedupe wrapper and a safe send dedupe implementation.
+# ===================== EXTRA V7 SHIMS (time + serializer) =====================
+# Some legacy wrappers expect module-level singletons with name-mangled aliases.
 try:
-    __hash_v7
+    __time_v7
 except NameError:
-    class __HashV7Shim:
+    class __TimeV7Shim:
         @staticmethod
-        def sha1():
-            import hashlib
-            return hashlib.sha1()
-    __hash_v7 = __HashV7Shim()
-# Some builds access the name-mangled variant from inside class _SendDedupeV7
+        def time():
+            import time
+            return time.time()
+    __time_v7 = __TimeV7Shim()
 try:
-    _SendDedupeV7__hash_v7
+    _SendDedupeV7__time_v7
 except NameError:
-    _SendDedupeV7__hash_v7 = __hash_v7  # alias
+    _SendDedupeV7__time_v7 = __time_v7  # alias
 
 try:
-    __send_dedupe_v7
+    __ser_em_v7
 except NameError:
-    import time as _t_v7, hashlib as _h_v7
-    class __SendDedupeShimV7:
-        def __init__(self): self.cache = {}
-        def _hash(self, content, embeds):
-            h = _h_v7.sha1()
-            h.update((content or "").encode("utf-8"))
+    import hashlib as _h
+    class __SerEmV7Shim:
+        def __init__(self): pass
+        def _norm(self, embeds):
+            out = []
             for em in embeds or []:
-                try: d = em.to_dict()
-                except Exception: d = {}
+                try:
+                    out.append(em.to_dict())
+                except Exception:
+                    out.append({})
+            return out
+        def digest(self, embeds):
+            h = _h.sha1()
+            for d in self._norm(embeds):
                 for k in ("title","description","color"):
                     h.update(str(d.get(k, "")).encode("utf-8"))
                 for f in d.get("fields", []) or []:
@@ -48,83 +52,17 @@ except NameError:
                     h.update(str(f.get("value","")).encode("utf-8"))
                     h.update(b"1" if f.get("inline") else b"0")
             return h.hexdigest()
-        async def send(self, obj, orig_send, *a, **k):
-            ch_id = getattr(obj, "id", None) or getattr(getattr(obj, "channel", None), "id", None)
-            content = k.get("content")
-            embeds = k.get("embeds") or ([k["embed"]] if "embed" in k else [])
-            key = (ch_id, self._hash(content, embeds))
-            now = _t_v7.time()
-            # purge >120s
-            for kk, (ts, _) in list(self.cache.items()):
-                if now - ts > 120: self.cache.pop(kk, None)
-            if key in self.cache and now - self.cache[key][0] < 120:
-                try:
-                    msg_id = self.cache[key][1]
-                    ch = obj if hasattr(obj, "fetch_message") else getattr(obj, "channel", None)
-                    if ch and hasattr(ch, "fetch_message"):
-                        return await ch.fetch_message(msg_id)
-                except Exception:
-                    pass
-            msg = await orig_send(*a, **k)
-            try: self.cache[key] = (now, msg.id)
-            except Exception: pass
-            return msg
-    __send_dedupe_v7 = __SendDedupeShimV7()
-
-# Layout guard: avoid "item would not fit at row ... (.. > 5 width)"
+        # Be permissive: whatever attribute is accessed, return a callable that digests.
+        def __getattr__(self, name):
+            def _fn(embeds):
+                return self.digest(embeds)
+            return _fn
+    __ser_em_v7 = __SerEmV7Shim()
 try:
-    import discord as _d_gl
-    _orig_add_item_guard = _d_gl.ui.View.add_item
-    def __row_used_width(view, row):
-        import discord as _d
-        w = 0
-        for c in view.children:
-            r = getattr(c, "row", 0) if getattr(c, "row", None) is not None else 0
-            if r != row: continue
-            if isinstance(c, _d.ui.Select): w += 5
-            elif isinstance(c, _d.ui.Button): w += 1
-            else: w += 1
-        return w
-    def __first_fit_row(view, width, start_row):
-        row = max(start_row, 0)
-        # limited to 5 rows; bump until enough capacity
-        for _ in range(25):
-            if __row_used_width(view, row) + width <= 5:
-                return row
-            row += 1
-        return row
-    def __is_timer_toggle(view): return type(view).__name__ == "TimerToggleView"
-    def __add_item_layout_guard(self, item):
-        import discord as _d
-        if __is_timer_toggle(self):
-            # Select gets full row; buttons pack after last select row
-            if isinstance(item, _d.ui.Select):
-                width = 5
-                last_row = max([getattr(c, "row", 0) if getattr(c, "row", None) is not None else 0
-                                for c in self.children], default=-1)
-                item.row = __first_fit_row(self, width, last_row + 1)
-                # Mirror current selection state as defaults
-                try:
-                    shown = set(getattr(self, "shown", []) or [])
-                    for opt in getattr(item, "options", []) or []:
-                        opt.default = (opt.value in shown)
-                except Exception:
-                    pass
-            elif isinstance(item, _d.ui.Button):
-                width = 1
-                sel_rows = [getattr(c, "row", 0) if getattr(c, "row", None) is not None else 0
-                            for c in self.children if isinstance(c, _d.ui.Select)]
-                start_row = (max(sel_rows) + 1) if sel_rows else 0
-                item.row = __first_fit_row(self, width, start_row)
-        return _orig_add_item_guard(self, item)
-    _d_gl.ui.View.add_item = __add_item_layout_guard
-    try:
-        if 'log' in globals(): log.info("[mobile] View.add_item layout guard installed")
-    except Exception:
-        pass
-except Exception:
-    pass
-# =================== END INSERT ===================
+    _SendDedupeV7__ser_em_v7
+except NameError:
+    _SendDedupeV7__ser_em_v7 = __ser_em_v7  # alias
+# =================== END EXTRA V7 SHIMS ===================
 
 # ==================== EARLY SCHEMA BOOTSTRAP (sync; placed after future imports) ====================
 # Ensures required tables/columns exist *before* any background tasks run.
