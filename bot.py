@@ -5588,3 +5588,68 @@ except Exception as _e:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
+# ===================== V7 SEND DEDUPE SHIM (compat layer) =====================
+# Stops NameError: _SendDedupeV7__hash_v7 and __send_dedupe_v7 while keeping behavior.
+try:
+    _SendDedupeV7__hash_v7
+except NameError:
+    class _SendDedupeV7__hash_v7_cls:
+        @staticmethod
+        def sha1():
+            import hashlib
+            return hashlib.sha1()
+    _SendDedupeV7__hash_v7 = _SendDedupeV7__hash_v7_cls()
+
+try:
+    __send_dedupe_v7  # noqa: F821
+except NameError:
+    import time as _t
+    import hashlib as _h
+    class __SimpleDedupeShim:
+        def __init__(self):
+            self.cache = {}  # (channel_id, hash) -> (ts, msg_id)
+        def _hash_payload(self, content, embeds):
+            h = _h.sha1()
+            h.update((content or "").encode("utf-8"))
+            for em in embeds or []:
+                try:
+                    d = em.to_dict()
+                except Exception:
+                    d = {}
+                for k in ("title","description","color"):
+                    v = str(d.get(k, ""))
+                    h.update(v.encode("utf-8"))
+                for f in d.get("fields", []):
+                    h.update(str(f.get("name","")).encode("utf-8"))
+                    h.update(str(f.get("value","")).encode("utf-8"))
+                    h.update(b"1" if f.get("inline") else b"0")
+            return h.hexdigest()
+        async def send(self, obj, orig_send, *a, **k):
+            ch_id = getattr(obj, "id", None) or getattr(getattr(obj, "channel", None), "id", None)
+            content = k.get("content")
+            embeds = k.get("embeds") or ([k["embed"]] if "embed" in k else [])
+            key = (ch_id, self._hash_payload(content, embeds))
+            now = _t.time()
+            # purge old
+            for kk, (ts, _) in list(self.cache.items()):
+                if now - ts > 120:
+                    self.cache.pop(kk, None)
+            if key in self.cache and now - self.cache[key][0] < 120:
+                try:
+                    msg_id = self.cache[key][1]
+                    ch = obj if hasattr(obj, "fetch_message") else getattr(obj, "channel", None)
+                    if ch and hasattr(ch, "fetch_message"):
+                        return await ch.fetch_message(msg_id)
+                except Exception:
+                    pass
+            msg = await orig_send(*a, **k)
+            try:
+                self.cache[key] = (now, msg.id)
+            except Exception:
+                pass
+            return msg
+    __send_dedupe_v7 = __SimpleDedupeShim()
+# =================== END V7 SEND DEDUPE SHIM ===================
