@@ -1672,14 +1672,7 @@ async def timers_cmd(ctx):
             t = fmt_delta_for_list(delta)
             if t == "-Nada":
                 nada_list.append((sk, nm, t, ts, win))
-            try:
-                _ws = str(win_status)
-            except Exception:
-                _ws = ""
-            if len(_ws) > 64:
-                _ws = _ws[:64]
-            _win_seg = (f" â€¢ Window: `{_ws}`" if _ws and "open" in _ws.lower() else "")
-            line1 = f"ã€” **{nm}** â€¢ Spawn: `{t}`{_win_seg} ã€•"
+            else:
                 normal.append((sk, nm, t, ts, win))
         normal.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
         nada_list.sort(key=lambda x: natural_key(x[1]))
@@ -1691,11 +1684,18 @@ async def timers_cmd(ctx):
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
             blocks.append("*Lost (-Nada):*")
-            for sk, nm, t, ts, win_m in nada_list:
-                blocks.append(f"â€¢ **{nm}** â€” `{t}`")
-        description = "\n\n".join(blocks) if blocks else "No timers."
-        em = discord.Embed(
-            title=f"{category_emoji(cat)} {cat}",
+        for sk, nm, t, ts, win_m in normal:
+            win_status = window_label(now, ts, win_m)
+            try:
+                _ws = str(win_status)
+            except Exception:
+                _ws = ""
+            if len(_ws) > 64:
+                _ws = _ws[:64]
+            _win_seg = (f" â€¢ Window: `{_ws}`" if _ws and "open" in _ws.lower() else "")
+            line1 = f"ã€” **{nm}** â€¢ Spawn: `{t}`{_win_seg} ã€•"
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
+            blocks.append(line1 + (eta_line if eta_line else ""))
             description=description,
             color=await get_category_color(gid, cat)
         )
