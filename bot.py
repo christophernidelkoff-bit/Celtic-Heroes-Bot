@@ -4991,6 +4991,72 @@ try:
 except Exception: pass
 # ==================== END ALT LEVEL DISPLAY HOTFIX ====================
 
+# ==================== MOBILE TIMER CATEGORY UI (compact select) ====================
+# Replaces per-category buttons with a single multi-select. Smaller, clearer on mobile, keeps All/None controls.
+try:
+    import discord as __d_mtim
+    from typing import List as __List
+except Exception:
+    __d_mtim = None
+
+EMOJI_FOR_CAT = {
+    "Warden": "🛡️",
+    "Meteoric": "☄️",
+    "Frozen": "❄️",
+    "DL": "⚔️",
+    "EDL": "🗡️",
+    "Midraids": "🐲",
+    "Rings": "💍",
+    "EG": "🏹",
+    "Default": "⏱️",
+}
+
+if __d_mtim is not None and 'TimerToggleView' in globals():
+    class _MobileCategorySelect(__d_mtim.ui.Select):
+        def __init__(self, parent_view):
+            self.parent_view = parent_view
+            opts = []
+            for cat in CATEGORY_ORDER:
+                emoji = EMOJI_FOR_CAT.get(cat)
+                opts.append(__d_mtim.SelectOption(label=cat, value=cat, emoji=emoji, default=(cat in parent_view.shown)))
+            super().__init__(
+                placeholder="Select categories to show",
+                min_values=0,
+                max_values=len(opts),
+                options=opts,
+                row=0
+            )
+        async def callback(self, interaction: __d_mtim.Interaction):
+            self.parent_view.shown = list(self.values)
+            await self.parent_view.refresh(interaction)
+
+    # Swap layout to compact select + existing All/None buttons; persist behavior unchanged.
+    try:
+        __orig_ttv_init = TimerToggleView.__init__  # type: ignore
+        def __compact_ttv_init(self, guild: __d_mtim.Guild, user_id: int, init_show: __List[str]):
+            __d_mtim.ui.View.__init__(self, timeout=300)  # bypass original
+            self.guild = guild
+            self.user_id = user_id
+            self.shown = [c for c in CATEGORY_ORDER if c in (init_show or [])] or CATEGORY_ORDER[:]  # default to all
+            self.add_item(_MobileCategorySelect(self))
+            try:
+                self.add_item(self._make_all_button())
+                self.add_item(self._make_none_button())
+            except Exception:
+                pass
+            self.message = None
+        TimerToggleView.__init__ = __compact_ttv_init  # type: ignore
+        if 'log' in globals():
+            log.info("[mobile] TimerToggleView switched to compact select layout")
+    except Exception as e:
+        try:
+            if 'log' in globals():
+                log.warning(f"[mobile] compact select hookup failed: {e}")
+        except Exception:
+            pass
+# ==================== END MOBILE TIMER CATEGORY UI ====================
+
+
 
 
 
