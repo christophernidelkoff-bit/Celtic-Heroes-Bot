@@ -5418,158 +5418,242 @@ except Exception:
     pass
 # ==================== END MOBILE TIMERS patch ====================
 
-# ==================== MOBILE TIMERS WRAP v4 (compact + split lines + layout fix) ====================
-# Non-destructive wrapper:
-# - Collapse all '-Nada' into: "*Missing:* **N**" per category (descriptions + fields).
-# - Split any line that contains a timer and 'window' into two lines:
-#     "**Name**  `T`"
-#     "> _window: …_"
-# - Tighten spacing: single newline between bosses.
-# - Fix "item would not fit at row 0 (10 > 5 width)" by enforcing select on row 0 and buttons on later rows.
+# ==================== RATE-LIMIT + MOBILE TIMERS WRAP v5 (additive, non-destructive) ====================
+# - Global edit limiter: coalesces duplicate edits and enforces per-message and per-channel spacing.
+# - Monkeypatches Message.edit to use limiter. TimerToggleView.refresh uses limiter and fixes row layout.
+# - Timer text reflow: two-line bosses, compact spacing, Missing count only.
 try:
-    import re as __re_v4
-    import discord as __dm_v4
+    import asyncio as __aio_v5
+    import time as __time_v5
+    import hashlib as __hash_v5
+    import discord as __d_v5
+    import re as __re_v5
 except Exception:
-    __re_v4 = None
-    __dm_v4 = None
+    __aio_v5 = None
 
+def __serialize_embed_for_hash(em):
+    try:
+        parts = [em.title or "", em.description or "", str(getattr(em, "color", ""))]
+        for f in getattr(em, "fields", []):
+            parts.append(f.name or "")
+            parts.append(f.value or "")
+            parts.append("1" if f.inline else "0")
+        return "|".join(parts)
+    except Exception:
+        return ""
+
+class __EditLimiter:
+    def __init__(self):
+        self.msg_locks = {}
+        self.msg_last_hash = {}
+        self.msg_last_time = {}
+        self.chan_last_time = {}
+        self.min_msg_interval = 1.2   # seconds per message
+        self.min_chan_interval = 0.7  # seconds per channel
+
+    def _key(self, m):
+        try:
+            return (m.channel.id, m.id)
+        except Exception:
+            return (None, None)
+
+    async def edit_message(self, msg, orig_edit, *args, **kwargs):
+        ch_id, m_id = self._key(msg)
+        key = (ch_id, m_id)
+        lock = self.msg_locks.setdefault(key, __aio_v5.Lock())
+
+        # Compute candidate hash
+        try:
+            content = kwargs.get("content", None)
+            embeds = kwargs.get("embeds", None)
+            embed = kwargs.get("embed", None)
+            if embed and not embeds:
+                embeds = [embed]
+            h = __hash_v5.sha1()
+            h.update((content or "").encode("utf-8"))
+            if embeds:
+                for em in embeds:
+                    h.update(__serialize_embed_for_hash(em).encode("utf-8"))
+            cand = h.hexdigest()
+        except Exception:
+            cand = None
+
+        async with lock:
+            # Skip if no change
+            last = self.msg_last_hash.get(key)
+            if cand and last == cand:
+                return msg
+            # Enforce per-channel spacing
+            now = __time_v5.time()
+            last_chan = self.chan_last_time.get(ch_id, 0.0)
+            wait_chan = self.min_chan_interval - (now - last_chan)
+            if wait_chan > 0:
+                await __aio_v5.sleep(wait_chan)
+            # Enforce per-message spacing
+            last_msg = self.msg_last_time.get(key, 0.0)
+            wait_msg = self.min_msg_interval - (now - last_msg)
+            if wait_msg > 0:
+                await __aio_v5.sleep(wait_msg)
+            # Perform edit with simple retry on 429
+            for attempt in range(3):
+                try:
+                    res = await orig_edit(*args, **kwargs)
+                    self.msg_last_time[key] = __time_v5.time()
+                    self.chan_last_time[ch_id] = self.msg_last_time[key]
+                    if cand:
+                        self.msg_last_hash[key] = cand
+                    return res
+                except __d_v5.HTTPException as e:
+                    # If 429, back off using retry_after if present, else 2s
+                    ra = getattr(e, "retry_after", None)
+                    await __aio_v5.sleep(ra or 2.0)
+                except Exception:
+                    # brief backoff
+                    await __aio_v5.sleep(1.0)
+            # Give up without raising
+            return msg
+
+__edit_limiter = __EditLimiter()
+
+# Monkeypatch discord.Message.edit to throttle globally
+try:
+    __orig_msg_edit = __d_v5.Message.edit
+    async def __patched_msg_edit(self, *args, **kwargs):
+        return await __edit_limiter.edit_message(self, lambda *a, **k: __orig_msg_edit(self, *a, **k), *args, **kwargs)
+    __d_v5.Message.edit = __patched_msg_edit
+    if 'log' in globals(): log.info("[rate] Message.edit patched with limiter")
+except Exception as _e:
+    try:
+        if 'log' in globals(): log.warning(f"[rate] patch Message.edit failed: {_e}")
+    except Exception:
+        pass
+
+# Timer text: collapse -Nada into Missing and split window to second line
 def __collapse_missing_any(txt: str) -> str:
-    if not txt:
-        return txt
-    # Remove explicit Lost (-Nada) header
-    txt = __re_v4.sub(r'^\*Lost\s*\(-Nada\):\*\s*$', '', txt, flags=__re_v4.MULTILINE)
+    if not txt: return txt
+    txt = __re_v5.sub(r'^\*Lost\s*\(-Nada\):\*\s*$', '', txt, flags=__re_v5.MULTILINE)
     missing = 0
     kept = []
     for ln in txt.splitlines():
         if '-Nada' in ln or '`-Nada`' in ln:
-            missing += 1
-            continue
+            missing += 1; continue
         kept.append(ln.rstrip())
     if missing:
         kept.append(f"*Missing:* **{missing}**")
     out = "\n".join(kept)
-    out = __re_v4.sub(r'\n{2,}', '\n', out)
+    out = __re_v5.sub(r'\n{2,}', '\n', out)
     return out
 
 def __split_spawn_window_lines(txt: str) -> str:
-    if not txt:
-        return txt
+    if not txt: return txt
     out = []
     for ln in txt.splitlines():
         L = ln.lower()
         if '`' in ln and 'window' in L:
-            # Split at first 'window'
-            idx = L.find('window')
-            pre, post = ln[:idx], ln[idx:]
-            pre = pre.strip().lstrip('•').strip()
-            post = post.strip()
-            # Clean post: drop markup and standardize label
-            post = __re_v4.sub(r'^[`*_>\s:]+', '', post)
+            idx = L.find('window'); pre, post = ln[:idx], ln[idx:]
+            pre = pre.strip().lstrip('•').strip(); post = post.strip()
+            post = __re_v5.sub(r'^[`*_>\s:]+', '', post)
             if not post.lower().startswith('window'):
                 post = 'window ' + post
             if pre:
-                out.append(pre)
-                out.append(f"> _{post}_")
-                continue
+                out.append(pre); out.append(f"> _{post}_"); continue
         out.append(ln.rstrip())
-    # Collapse extra blanks
     s = "\n".join(out)
-    s = __re_v4.sub(r'\n{3,}', '\n\n', s)
+    s = __re_v5.sub(r'\n{3,}', '\n\n', s)
     return s
 
 def __compact_timer_text(txt: str) -> str:
     return __split_spawn_window_lines(__collapse_missing_any(txt))
 
 def __apply_embed_compact(em):
-    # Description
     if getattr(em, "description", None):
         em.description = __compact_timer_text(em.description)[:4096]
-    # Fields
     if getattr(em, "fields", None):
-        new_fields = []
+        fields = []
         for f in em.fields:
-            name = f.name
-            val = __compact_timer_text(f.value)[:1024]
-            new_fields.append((name, val, f.inline))
+            fields.append((f.name, __compact_timer_text(f.value)[:1024], f.inline))
         try:
             em.clear_fields()
         except Exception:
             pass
-        for n, v, i in new_fields:
+        for n, v, i in fields:
             em.add_field(name=n, value=v, inline=i)
 
-def __fit_view_rows(view):
-    try:
-        # Place any selects on row 0
-        for child in getattr(view, "children", []):
-            if isinstance(child, __dm_v4.ui.Select):
-                child.row = 0
-        # Buttons on subsequent rows, max width 5 per row
-        row = 1
-        width = 0
-        for child in getattr(view, "children", []):
-            if isinstance(child, __dm_v4.ui.Button):
-                if width >= 5:
-                    row += 1
-                    width = 0
-                child.row = row
-                width += 1
-    except Exception:
-        pass
-
-# Bind the builder wrapper
+# Wrap the timers embed builder
 try:
-    __orig_builder_v4 = build_timer_embeds_for_categories  # type: ignore
-    async def _build_timer_embeds_for_categories__mobile_wrap_v4(guild, categories):
-        embeds = await __orig_builder_v4(guild, categories)
+    __orig_builder_v5 = build_timer_embeds_for_categories  # type: ignore
+    async def _build_timer_embeds_for_categories__mobile_wrap_v5(guild, categories):
+        embeds = await __orig_builder_v5(guild, categories)
         try:
             for em in embeds or []:
                 __apply_embed_compact(em)
         except Exception as _e:
-            if 'log' in globals(): log.warning(f"[mobile] v4 post-process failed: {_e}")
+            if 'log' in globals(): log.warning(f"[mobile] v5 post-process failed: {_e}")
         return embeds
-    build_timer_embeds_for_categories = _build_timer_embeds_for_categories__mobile_wrap_v4  # type: ignore
-    if 'log' in globals(): log.info("[mobile] wrapper v4: compact lines + Missing count + split window + spacing")
+    build_timer_embeds_for_categories = _build_timer_embeds_for_categories__mobile_wrap_v5  # type: ignore
+    if 'log' in globals(): log.info("[mobile] wrapper v5 active")
 except Exception as _e:
     try:
-        if 'log' in globals(): log.warning(f"[mobile] builder wrapper v4 not applied: {_e}")
+        if 'log' in globals(): log.warning(f"[mobile] wrapper v5 not applied: {_e}")
     except Exception:
         pass
 
-# Patch TimerToggleView.refresh to enforce component layout and avoid row overflow
+# Enforce safe layout and rate-limited edits inside TimerToggleView.refresh
 try:
     if 'TimerToggleView' in globals():
         __orig_refresh = getattr(TimerToggleView, "refresh", None)
         if __orig_refresh is not None:
-            async def __refresh_v4(self, interaction):
-                try:
-                    __fit_view_rows(self)
-                except Exception:
-                    pass
-                # Run original
+            async def __refresh_v5(self, interaction):
+                # call original refresh to rebuild view content
                 try:
                     await __orig_refresh(self, interaction)
                 except TypeError:
-                    # Some builds use no-arg refresh
                     await __orig_refresh(self)
-                # Fit rows again after potential clear/rebuild
+
+                # Layout fix: ensure at most one Select per row, all selects start at row 0.
                 try:
-                    __fit_view_rows(self)
-                except Exception:
-                    pass
+                    row = 0
+                    sel_on_row = 0
+                    for child in self.children:
+                        if isinstance(child, __d_v5.ui.Select):
+                            if sel_on_row >= 1:
+                                row += 1
+                                sel_on_row = 0
+                            child.row = row
+                            sel_on_row += 1
+                    # Buttons start after selects, wrap at width 5
+                    row += 1
+                    width = 0
+                    for child in self.children:
+                        if isinstance(child, __d_v5.ui.Button):
+                            if width >= 5:
+                                row += 1; width = 0
+                            child.row = row; width += 1
+                except Exception as _e:
+                    if 'log' in globals(): log.warning(f"[mobile] layout set failed: {_e}")
+
+                # Use limiter for edit; avoid duplicate patches
                 try:
-                    if hasattr(interaction, "response") and interaction.response.is_done():
+                    msg = await interaction.original_response()
+                    await __edit_limiter.edit_message(
+                        msg,
+                        lambda **k: msg.edit(**k),
+                        view=self
+                    )
+                except Exception as _e:
+                    try:
+                        # Fallback to interaction method if message not created yet
                         await interaction.edit_original_response(view=self)
-                except Exception:
-                    pass
-            TimerToggleView.refresh = __refresh_v4  # type: ignore
-            if 'log' in globals(): log.info("[mobile] v4 layout: select row 0, buttons wrapped ≤5 width")
+                    except Exception:
+                        if 'log' in globals(): log.warning(f"[rate] refresh edit failed: {_e}")
+            TimerToggleView.refresh = __refresh_v5  # type: ignore
+            if 'log' in globals(): log.info("[mobile] TimerToggleView.refresh patched with layout+rate-limit")
 except Exception as _e:
     try:
-        if 'log' in globals(): log.warning(f"[mobile] TimerToggleView layout patch failed: {_e}")
+        if 'log' in globals(): log.warning(f"[mobile] TimerToggleView patch failed: {_e}")
     except Exception:
         pass
-# ==================== END MOBILE TIMERS WRAP v4 ====================
+# ==================== END v5 ====================
 
 
 
