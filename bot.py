@@ -1499,17 +1499,14 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            blocks.append(f"**{nm}**")
-            blocks.append(f"`Spawn:` {t}")
-            blocks.append(f"_window: {win_status}_")
-            if show_eta and (ts - now) > 0:
-                blocks.append(f"> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*")
-            # spacer (single blank line) between bosses
-            blocks.append("")
+            line1 = f"〔 **{nm}** • Spawn: `{t}` • Window: `{win_status}` 〕"
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
+            blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
-            blocks.append(f"*Missing:* **{len(nada_list)}**")
-        # compact spacing: single newlines
-        description = "\n".join([ln for ln in blocks if ln is not None]) if blocks else "No timers."
+            blocks.append("*Lost (-Nada):*")
+            for sk, nm, t, ts, win_m in nada_list:
+                blocks.append(f"• **{nm}** — `{t}`")
+        description = "\n\n".join(blocks) if blocks else "No timers."
         em = discord.Embed(
             title=f"{category_emoji(cat)} {cat}",
             description=description,
@@ -1675,17 +1672,14 @@ async def timers_cmd(ctx):
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            blocks.append(f"**{nm}**")
-            blocks.append(f"`Spawn:` {t}")
-            blocks.append(f"_window: {win_status}_")
-            if show_eta and (ts - now) > 0:
-                blocks.append(f"> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*")
-            # spacer (single blank line) between bosses
-            blocks.append("")
+            line1 = f"〔 **{nm}** • Spawn: `{t}` • Window: `{win_status}` 〕"
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
+            blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
-            blocks.append(f"*Missing:* **{len(nada_list)}**")
-        # compact spacing: single newlines
-        description = "\n".join([ln for ln in blocks if ln is not None]) if blocks else "No timers."
+            blocks.append("*Lost (-Nada):*")
+            for sk, nm, t, ts, win_m in nada_list:
+                blocks.append(f"• **{nm}** — `{t}`")
+        description = "\n\n".join(blocks) if blocks else "No timers."
         em = discord.Embed(
             title=f"{category_emoji(cat)} {cat}",
             description=description,
@@ -5424,106 +5418,158 @@ except Exception:
     pass
 # ==================== END MOBILE TIMERS patch ====================
 
-# ==================== MOBILE TIMERS PRESENTATION WRAPPER v3 (additive, non-destructive) ====================
-# Compact mobile layout:
-#   - Collapse -Nada into "Missing: N" (kept from v2).
-#   - Reflow per-boss lines to two lines:
-#       "**Name**  `T`" on line 1
-#       "> _window: STATUS_" on line 2
-#   - Remove bullets and extra padding. Single newline between bosses.
+# ==================== MOBILE TIMERS WRAP v4 (compact + split lines + layout fix) ====================
+# Non-destructive wrapper:
+# - Collapse all '-Nada' into: "*Missing:* **N**" per category (descriptions + fields).
+# - Split any line that contains a timer and 'window' into two lines:
+#     "**Name**  `T`"
+#     "> _window: …_"
+# - Tighten spacing: single newline between bosses.
+# - Fix "item would not fit at row 0 (10 > 5 width)" by enforcing select on row 0 and buttons on later rows.
 try:
-    import re as __re_flow
+    import re as __re_v4
+    import discord as __dm_v4
 except Exception:
-    __re_flow = None
+    __re_v4 = None
+    __dm_v4 = None
 
-def __collapse_missing(__txt: str) -> str:
-    # Convert any explicit -Nada lines into a single "Missing: N" and tighten spacing.
-    if not __txt:
-        return __txt
+def __collapse_missing_any(txt: str) -> str:
+    if not txt:
+        return txt
+    # Remove explicit Lost (-Nada) header
+    txt = __re_v4.sub(r'^\*Lost\s*\(-Nada\):\*\s*$', '', txt, flags=__re_v4.MULTILINE)
     missing = 0
     kept = []
-    for ln in __txt.splitlines():
-        if "-Nada" in ln or "`-Nada`" in ln:
+    for ln in txt.splitlines():
+        if '-Nada' in ln or '`-Nada`' in ln:
             missing += 1
             continue
-        # Drop legacy header
-        if ln.strip().lower().startswith("*lost (-nada):*"):
-            continue
-        kept.append(ln)
+        kept.append(ln.rstrip())
     if missing:
         kept.append(f"*Missing:* **{missing}**")
     out = "\n".join(kept)
-    # Collapse 2+ blank lines to single
-    out = __re_flow.sub(r"\n{2,}", "\n", out)
+    out = __re_v4.sub(r'\n{2,}', '\n', out)
     return out
 
-def __reflow_one_block(txt: str) -> str:
+def __split_spawn_window_lines(txt: str) -> str:
     if not txt:
         return txt
-    lines = txt.splitlines()
-    res = []
-    for ln in lines:
-        # Pattern A: bullet style "• **Name** — `T` · STATUS"
-        m = __re_flow.match(r"^\s*•\s+\*\*(.+?)\*\*\s+—\s+`([^`]+)`\s+·\s+(.+)\s*$", ln)
-        if m:
-            name, timer, status = m.groups()
-            res.append(f"**{name}**  `{timer}`")
-            if not status.lower().startswith("window"):
-                status = f"window {status}"
-            res.append(f"> _{status}_")
-            continue
-        # Pattern B: bracketed style "〔 **Name** • Spawn: `T` • Window: `WIN` 〕"
-        m2 = __re_flow.search(r"\*\*(.+?)\*\*.*Spawn:\s*`([^`]+)`.*Window:\s*`([^`]+)`", ln)
-        if m2:
-            name, timer, win = m2.groups()
-            res.append(f"**{name}**  `{timer}`")
-            res.append(f"> _window: {win}_")
-            continue
-        # ETA lines
-        if ln.strip().lower().startswith(("> *eta", ">*eta")):
-            res.append(__re_flow.sub(r"\s+", " ", ln.strip()))
-            continue
-        # Pass-through
-        res.append(ln.rstrip())
-    # Tighten
-    res = [l.replace("• ", "") for l in res]
-    out = "\n".join(res)
-    out = __re_flow.sub(r"\n{2,}", "\n", out)
-    return out
+    out = []
+    for ln in txt.splitlines():
+        L = ln.lower()
+        if '`' in ln and 'window' in L:
+            # Split at first 'window'
+            idx = L.find('window')
+            pre, post = ln[:idx], ln[idx:]
+            pre = pre.strip().lstrip('•').strip()
+            post = post.strip()
+            # Clean post: drop markup and standardize label
+            post = __re_v4.sub(r'^[`*_>\s:]+', '', post)
+            if not post.lower().startswith('window'):
+                post = 'window ' + post
+            if pre:
+                out.append(pre)
+                out.append(f"> _{post}_")
+                continue
+        out.append(ln.rstrip())
+    # Collapse extra blanks
+    s = "\n".join(out)
+    s = __re_v4.sub(r'\n{3,}', '\n\n', s)
+    return s
 
-def __compress_and_reflow_any(txt: str) -> str:
-    return __reflow_one_block(__collapse_missing(txt))
+def __compact_timer_text(txt: str) -> str:
+    return __split_spawn_window_lines(__collapse_missing_any(txt))
 
-try:
-    __orig_builder_v3 = build_timer_embeds_for_categories  # type: ignore
-    async def _build_timer_embeds_for_categories__mobile_wrap_v3(guild, categories):
-        embeds = await __orig_builder_v3(guild, categories)
+def __apply_embed_compact(em):
+    # Description
+    if getattr(em, "description", None):
+        em.description = __compact_timer_text(em.description)[:4096]
+    # Fields
+    if getattr(em, "fields", None):
+        new_fields = []
+        for f in em.fields:
+            name = f.name
+            val = __compact_timer_text(f.value)[:1024]
+            new_fields.append((name, val, f.inline))
         try:
-            for em in embeds or []:
-                if getattr(em, "description", None):
-                    em.description = __compress_and_reflow_any(em.description)[:4096]
-                if getattr(em, "fields", None):
-                    fields = []
-                    for f in em.fields:
-                        fields.append((f.name, __compress_and_reflow_any(f.value)[:1024], f.inline))
-                    try:
-                        em.clear_fields()
-                    except Exception:
-                        pass
-                    for n, v, i in fields:
-                        em.add_field(name=n, value=v, inline=i)
-        except Exception as _e:
-            if 'log' in globals():
-                log.warning(f"[mobile] v3 post-process failed: {_e}")
-        return embeds
-    build_timer_embeds_for_categories = _build_timer_embeds_for_categories__mobile_wrap_v3  # type: ignore
-    if 'log' in globals(): log.info("[mobile] wrapper v3: compact two-line boss + Missing count, tightened spacing")
-except Exception as _e:
+            em.clear_fields()
+        except Exception:
+            pass
+        for n, v, i in new_fields:
+            em.add_field(name=n, value=v, inline=i)
+
+def __fit_view_rows(view):
     try:
-        if 'log' in globals(): log.warning(f"[mobile] builder wrapper v3 not applied: {_e}")
+        # Place any selects on row 0
+        for child in getattr(view, "children", []):
+            if isinstance(child, __dm_v4.ui.Select):
+                child.row = 0
+        # Buttons on subsequent rows, max width 5 per row
+        row = 1
+        width = 0
+        for child in getattr(view, "children", []):
+            if isinstance(child, __dm_v4.ui.Button):
+                if width >= 5:
+                    row += 1
+                    width = 0
+                child.row = row
+                width += 1
     except Exception:
         pass
-# ==================== END WRAPPER v3 ====================
+
+# Bind the builder wrapper
+try:
+    __orig_builder_v4 = build_timer_embeds_for_categories  # type: ignore
+    async def _build_timer_embeds_for_categories__mobile_wrap_v4(guild, categories):
+        embeds = await __orig_builder_v4(guild, categories)
+        try:
+            for em in embeds or []:
+                __apply_embed_compact(em)
+        except Exception as _e:
+            if 'log' in globals(): log.warning(f"[mobile] v4 post-process failed: {_e}")
+        return embeds
+    build_timer_embeds_for_categories = _build_timer_embeds_for_categories__mobile_wrap_v4  # type: ignore
+    if 'log' in globals(): log.info("[mobile] wrapper v4: compact lines + Missing count + split window + spacing")
+except Exception as _e:
+    try:
+        if 'log' in globals(): log.warning(f"[mobile] builder wrapper v4 not applied: {_e}")
+    except Exception:
+        pass
+
+# Patch TimerToggleView.refresh to enforce component layout and avoid row overflow
+try:
+    if 'TimerToggleView' in globals():
+        __orig_refresh = getattr(TimerToggleView, "refresh", None)
+        if __orig_refresh is not None:
+            async def __refresh_v4(self, interaction):
+                try:
+                    __fit_view_rows(self)
+                except Exception:
+                    pass
+                # Run original
+                try:
+                    await __orig_refresh(self, interaction)
+                except TypeError:
+                    # Some builds use no-arg refresh
+                    await __orig_refresh(self)
+                # Fit rows again after potential clear/rebuild
+                try:
+                    __fit_view_rows(self)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(interaction, "response") and interaction.response.is_done():
+                        await interaction.edit_original_response(view=self)
+                except Exception:
+                    pass
+            TimerToggleView.refresh = __refresh_v4  # type: ignore
+            if 'log' in globals(): log.info("[mobile] v4 layout: select row 0, buttons wrapped ≤5 width")
+except Exception as _e:
+    try:
+        if 'log' in globals(): log.warning(f"[mobile] TimerToggleView layout patch failed: {_e}")
+    except Exception:
+        pass
+# ==================== END MOBILE TIMERS WRAP v4 ====================
 
 
 
