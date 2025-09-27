@@ -284,7 +284,7 @@ DEFAULT_COLORS = {
 EMOJI_PALETTE = [
     "ðŸŸ¥","ðŸŸ§","ðŸŸ¨","ðŸŸ©","ðŸŸ¦","ðŸŸª","â¬›","â¬œ","ðŸŸ«",
     "ðŸ”´","ðŸŸ ","ðŸŸ¡","ðŸŸ¢","ðŸ”µ","ðŸŸ£","âš«","âšª","ðŸŸ¤",
-    "â­","âœ¨","âš¡","ðŸ”¥","âš”ï¸","ðŸ—¡ï¸","ðŸ›¡ï¸","ðŸ¹","ðŸ—¿","ðŸ§ª","ðŸ§¿","ðŸ‘‘","ðŸŽ¯","ðŸª™",
+    "â­","✨","âš¡","ðŸ”¥","âš”ï¸","ðŸ—¡ï¸","ðŸ›¡ï¸","ðŸ¹","ðŸ—¿","ðŸ§ª","ðŸ§¿","ðŸ‘‘","ðŸŽ¯","ðŸª™",
     "ðŸ‰","ðŸ²","ðŸ”±","â˜„ï¸","ðŸ§Š","ðŸŒ‹","ðŸŒªï¸","ðŸŒŠ","ðŸŒ«ï¸","ðŸŒ©ï¸","ðŸª½","ðŸª“",
     "0ï¸âƒ£","1ï¸âƒ£","2ï¸âƒ£","3ï¸âƒ£","4ï¸âƒ£","5ï¸âƒ£","6ï¸âƒ£","7ï¸âƒ£","8ï¸âƒ£","9ï¸âƒ£","ðŸ”Ÿ",
 ]
@@ -4621,7 +4621,7 @@ def _build_roster_embed_final(member: discord.Member, main_name: str, main_level
     except Exception:
         alt_lines = []
     m_lv = __coerce_lvl_v3(main_level) or main_level
-    main_line = f"**âœ¨ {main_name} • Lv {m_lv} • {main_class} âœ¨**"
+    main_line = f"**✨ {main_name} • Lv {m_lv} • {main_class} ✨**"
     e = discord.Embed(title=f"New Member: {member.display_name}", color=discord.Color.blurple())
     e.add_field(name="Main", value=main_line, inline=False)
     e.add_field(name="Alts", value="\n".join(alt_lines) if alt_lines else "N/A", inline=False)
@@ -4715,7 +4715,7 @@ def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw,
             lv = a.get("level")
             lines.append(f"{i}. {a['name']} • {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} • {a['class']}")
         e = __discord_altv.Embed(title=f"New Member: {member.display_name}", color=__discord_altv.Color.blurple())
-        e.add_field(name="Main", value=f"**âœ¨ {main_name} • Lv {main_level} • {main_class} âœ¨**", inline=False)
+        e.add_field(name="Main", value=f"**✨ {main_name} • Lv {main_level} • {main_class} ✨**", inline=False)
         e.add_field(name="Alts", value=("\n".join(lines) if lines else "N/A"), inline=False)
         tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
         e.add_field(name="Timezone", value=tz or "N/A", inline=False)
@@ -4858,7 +4858,7 @@ def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw,
             lv = a.get("level")
             lines.append(f"{i}. {a['name']} • {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} • {a['class']}")
         e = __d_altv2.Embed(title=f"New Member", color=__d_altv2.Color.blurple())
-        e.add_field(name="Main", value=f"**âœ¨ {main_name} • Lv {main_level} • {main_class} âœ¨**", inline=False)
+        e.add_field(name="Main", value=f"**✨ {main_name} • Lv {main_level} • {main_class} ✨**", inline=False)
         e.add_field(name="Alts", value=("\n".join(lines) if lines else "N/A"), inline=False)
         tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
         e.add_field(name="Timezone", value=tz or "N/A", inline=False)
@@ -4988,7 +4988,7 @@ def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw,
         try: return __orig_build_embed(member, main_name, main_level, main_class, norm, tz_raw, tz_norm)
         except Exception: pass
     e = __d_alts.Embed(title=f"New Member: {getattr(member,'display_name','?')}", color=__d_alts.Color.blurple())
-    e.add_field(name="Main", value=f"**âœ¨ {main_name} • Lv {__alts_coerce_level(main_level) or main_level} • {main_class} âœ¨**", inline=False)
+    e.add_field(name="Main", value=f"**✨ {main_name} • Lv {__alts_coerce_level(main_level) or main_level} • {main_class} ✨**", inline=False)
     alt_lines = [f"{i}. {a['name']} • {'Lv '+str(a['level']) if isinstance(a['level'],int) else 'Lv N/A'} • {a['class']}" for i,a in enumerate(norm,1)] or ["N/A"]
     e.add_field(name="Alts", value="\n".join(alt_lines), inline=False)
     tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
