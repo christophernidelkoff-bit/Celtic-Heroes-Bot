@@ -5418,20 +5418,21 @@ except Exception:
     pass
 # ==================== END MOBILE TIMERS patch ====================
 
-# ==================== RATE-LIMIT + MOBILE TIMERS WRAP v5 (additive, non-destructive) ====================
-# - Global edit limiter: coalesces duplicate edits and enforces per-message and per-channel spacing.
-# - Monkeypatches Message.edit to use limiter. TimerToggleView.refresh uses limiter and fixes row layout.
-# - Timer text reflow: two-line bosses, compact spacing, Missing count only.
+# ==================== RATE-LIMIT + MOBILE TIMERS WRAP v6 (additive, non-destructive) ====================
+# Fixes:
+# - Robust layout: never place more than one Select on a row; buttons wrapped ≤5 width. Works at add_item time.
+# - Fewer edits: global Message.edit limiter, coalesces duplicates, backs off on 429.
+# - Timer text: collapse "-Nada" to "Missing: N"; split "Spawn" and "window" to two lines in both descriptions and fields.
 try:
-    import asyncio as __aio_v5
-    import time as __time_v5
-    import hashlib as __hash_v5
-    import discord as __d_v5
-    import re as __re_v5
+    import asyncio as __aio_v6
+    import time as __time_v6
+    import hashlib as __hash_v6
+    import discord as __d_v6
+    import re as __re_v6
 except Exception:
-    __aio_v5 = None
+    __aio_v6 = None
 
-def __serialize_embed_for_hash(em):
+def __serialize_embed_for_hash_v6(em):
     try:
         parts = [em.title or "", em.description or "", str(getattr(em, "color", ""))]
         for f in getattr(em, "fields", []):
@@ -5442,14 +5443,14 @@ def __serialize_embed_for_hash(em):
     except Exception:
         return ""
 
-class __EditLimiter:
+class __EditLimiterV6:
     def __init__(self):
         self.msg_locks = {}
         self.msg_last_hash = {}
         self.msg_last_time = {}
         self.chan_last_time = {}
-        self.min_msg_interval = 1.2   # seconds per message
-        self.min_chan_interval = 0.7  # seconds per channel
+        self.min_msg_interval = 1.1
+        self.min_chan_interval = 0.6
 
     def _key(self, m):
         try:
@@ -5460,200 +5461,191 @@ class __EditLimiter:
     async def edit_message(self, msg, orig_edit, *args, **kwargs):
         ch_id, m_id = self._key(msg)
         key = (ch_id, m_id)
-        lock = self.msg_locks.setdefault(key, __aio_v5.Lock())
-
-        # Compute candidate hash
+        lock = self.msg_locks.setdefault(key, __aio_v6.Lock())
+        # Build content hash
         try:
             content = kwargs.get("content", None)
             embeds = kwargs.get("embeds", None)
             embed = kwargs.get("embed", None)
             if embed and not embeds:
                 embeds = [embed]
-            h = __hash_v5.sha1()
+            h = __hash_v6.sha1()
             h.update((content or "").encode("utf-8"))
             if embeds:
                 for em in embeds:
-                    h.update(__serialize_embed_for_hash(em).encode("utf-8"))
+                    h.update(__serialize_embed_for_hash_v6(em).encode("utf-8"))
             cand = h.hexdigest()
         except Exception:
             cand = None
-
         async with lock:
-            # Skip if no change
             last = self.msg_last_hash.get(key)
             if cand and last == cand:
                 return msg
-            # Enforce per-channel spacing
-            now = __time_v5.time()
+            now = __time_v6.time()
+            # per-channel
             last_chan = self.chan_last_time.get(ch_id, 0.0)
             wait_chan = self.min_chan_interval - (now - last_chan)
             if wait_chan > 0:
-                await __aio_v5.sleep(wait_chan)
-            # Enforce per-message spacing
+                await __aio_v6.sleep(wait_chan)
+            # per-message
             last_msg = self.msg_last_time.get(key, 0.0)
             wait_msg = self.min_msg_interval - (now - last_msg)
             if wait_msg > 0:
-                await __aio_v5.sleep(wait_msg)
-            # Perform edit with simple retry on 429
+                await __aio_v6.sleep(wait_msg)
             for attempt in range(3):
                 try:
                     res = await orig_edit(*args, **kwargs)
-                    self.msg_last_time[key] = __time_v5.time()
-                    self.chan_last_time[ch_id] = self.msg_last_time[key]
+                    t = __time_v6.time()
+                    self.msg_last_time[key] = t
+                    self.chan_last_time[ch_id] = t
                     if cand:
                         self.msg_last_hash[key] = cand
                     return res
-                except __d_v5.HTTPException as e:
-                    # If 429, back off using retry_after if present, else 2s
+                except __d_v6.HTTPException as e:
                     ra = getattr(e, "retry_after", None)
-                    await __aio_v5.sleep(ra or 2.0)
+                    await __aio_v6.sleep(ra or 2.0)
                 except Exception:
-                    # brief backoff
-                    await __aio_v5.sleep(1.0)
-            # Give up without raising
+                    await __aio_v6.sleep(1.0)
             return msg
 
-__edit_limiter = __EditLimiter()
+__edit_limiter_v6 = __EditLimiterV6()
 
-# Monkeypatch discord.Message.edit to throttle globally
+# Monkeypatch Message.edit
 try:
-    __orig_msg_edit = __d_v5.Message.edit
-    async def __patched_msg_edit(self, *args, **kwargs):
-        return await __edit_limiter.edit_message(self, lambda *a, **k: __orig_msg_edit(self, *a, **k), *args, **kwargs)
-    __d_v5.Message.edit = __patched_msg_edit
-    if 'log' in globals(): log.info("[rate] Message.edit patched with limiter")
+    __orig_msg_edit_v6 = __d_v6.Message.edit
+    async def __patched_msg_edit_v6(self, *args, **kwargs):
+        return await __edit_limiter_v6.edit_message(self, lambda *a, **k: __orig_msg_edit_v6(self, *a, **k), *args, **kwargs)
+    __d_v6.Message.edit = __patched_msg_edit_v6
+    if 'log' in globals(): log.info("[rate] v6 limiter patched into Message.edit")
 except Exception as _e:
     try:
-        if 'log' in globals(): log.warning(f"[rate] patch Message.edit failed: {_e}")
+        if 'log' in globals(): log.warning(f"[rate] v6 patch failed: {_e}")
     except Exception:
         pass
 
-# Timer text: collapse -Nada into Missing and split window to second line
-def __collapse_missing_any(txt: str) -> str:
+# Monkeypatch View.add_item to enforce layout at add time
+def __row_of(x):
+    r = getattr(x, "row", None)
+    return 0 if r is None else r
+def __is_timer_view(v):
+    return type(v).__name__ == "TimerToggleView"
+
+try:
+    __orig_add_item_v6 = __d_v6.ui.View.add_item
+    def __patched_add_item_v6(self, item):
+        if __is_timer_view(self):
+            try:
+                if isinstance(item, __d_v6.ui.Select):
+                    # Each Select must occupy a fresh row
+                    used_rows = {__row_of(c) for c in self.children if isinstance(c, __d_v6.ui.Select)}
+                    row = 0
+                    while row in used_rows:
+                        row += 1
+                    item.row = row
+                elif isinstance(item, __d_v6.ui.Button):
+                    # Buttons after selects
+                    max_sel_row = max([-1] + [__row_of(c) for c in self.children if isinstance(c, __d_v6.ui.Select)])
+                    row = max_sel_row + 1
+                    # count buttons on this row
+                    while True:
+                        w = sum(1 for c in self.children if isinstance(c, __d_v6.ui.Button) and __row_of(c) == row)
+                        if w < 5:
+                            break
+                        row += 1
+                    item.row = row
+            except Exception as _e:
+                if 'log' in globals(): log.warning(f"[mobile] add_item layout advisory failed: {_e}")
+        return __orig_add_item_v6(self, item)
+    __d_v6.ui.View.add_item = __patched_add_item_v6
+    if 'log' in globals(): log.info("[mobile] v6: View.add_item patched for TimerToggleView layout")
+except Exception as _e:
+    try:
+        if 'log' in globals(): log.warning(f"[mobile] View.add_item patch failed: {_e}")
+    except Exception:
+        pass
+
+# Text utilities
+__re_lineA = __re_v6.compile(r"^\s*•\s+\*\*(?P<name>.+?)\*\*\s+—\s+`(?P<time>[^`]+)`\s+·\s+(?P<status>.+)\s*$")
+__re_lineB = __re_v6.compile(r"\*\*(?P<name>.+?)\*\*.*Spawn:\s*`(?P<time>[^`]+)`.*Window:\s*`?(?P<win>[^`]+?)`?\s*\]*")
+__re_window = __re_v6.compile(r"(?:^|\s)(?:Window|window)\s*:?\s*`?(?P<win>[^`]+?)`?\s*$", __re_v6.IGNORECASE)
+
+def __collapse_missing_any_v6(txt: str) -> str:
     if not txt: return txt
-    txt = __re_v5.sub(r'^\*Lost\s*\(-Nada\):\*\s*$', '', txt, flags=__re_v5.MULTILINE)
+    txt = __re_v6.sub(r'^\*Lost\s*\(-Nada\):\*\s*$', '', txt, flags=__re_v6.MULTILINE)
     missing = 0
     kept = []
     for ln in txt.splitlines():
-        if '-Nada' in ln or '`-Nada`' in ln:
+        if "-Nada" in ln or "`-Nada`" in ln:
             missing += 1; continue
         kept.append(ln.rstrip())
     if missing:
         kept.append(f"*Missing:* **{missing}**")
     out = "\n".join(kept)
-    out = __re_v5.sub(r'\n{2,}', '\n', out)
+    out = __re_v6.sub(r"\n{2,}", "\n", out)
     return out
 
-def __split_spawn_window_lines(txt: str) -> str:
+def __reflow_timer_lines_v6(txt: str) -> str:
     if not txt: return txt
-    out = []
+    res = []
     for ln in txt.splitlines():
-        L = ln.lower()
-        if '`' in ln and 'window' in L:
-            idx = L.find('window'); pre, post = ln[:idx], ln[idx:]
-            pre = pre.strip().lstrip('•').strip(); post = post.strip()
-            post = __re_v5.sub(r'^[`*_>\s:]+', '', post)
-            if not post.lower().startswith('window'):
-                post = 'window ' + post
-            if pre:
-                out.append(pre); out.append(f"> _{post}_"); continue
-        out.append(ln.rstrip())
-    s = "\n".join(out)
-    s = __re_v5.sub(r'\n{3,}', '\n\n', s)
-    return s
+        mA = __re_lineA.match(ln)
+        if mA:
+            n = mA.group("name"); t = mA.group("time"); s = mA.group("status")
+            mW = __re_window.search(s) or __re_v6.search(r"`([^`]+)`", s)
+            win = (mW.group("win") if mW and "win" in mW.groupdict() else (mW.group(1) if mW else s)).strip()
+            res.append(f"**{n}**  `{t}`"); res.append(f"> _window: {win}_"); continue
+        mB = __re_lineB.search(ln)
+        if mB:
+            n = mB.group("name"); t = mB.group("time"); win = mB.group("win").strip()
+            res.append(f"**{n}**  `{t}`"); res.append(f"> _window: {win}_"); continue
+        if '`' in ln and 'window' in ln.lower():
+            parts = ln.split('`')
+            if len(parts) >= 3:
+                before = parts[0]; time = parts[1]; after = '`'.join(parts[2:])
+                mW2 = __re_window.search(after); win = (mW2.group("win") if mW2 else after.strip())
+                mName = __re_v6.search(r"\*\*(.+?)\*\*", before); name = mName.group(1) if mName else before.strip("• []")
+                res.append(f"**{name}**  `{time}`"); res.append(f"> _window: {win}_"); continue
+        res.append(ln.rstrip())
+    out = "\n".join(res)
+    out = __re_v6.sub(r"\n{3,}", "\n\n", out)
+    return out
 
-def __compact_timer_text(txt: str) -> str:
-    return __split_spawn_window_lines(__collapse_missing_any(txt))
+def __compact_timer_text_v6(txt: str) -> str:
+    return __reflow_timer_lines_v6(__collapse_missing_any_v6(txt))
 
-def __apply_embed_compact(em):
+def __apply_embed_compact_v6(em):
     if getattr(em, "description", None):
-        em.description = __compact_timer_text(em.description)[:4096]
+        em.description = __compact_timer_text_v6(em.description)[:4096]
     if getattr(em, "fields", None):
-        fields = []
+        fnew = []
         for f in em.fields:
-            fields.append((f.name, __compact_timer_text(f.value)[:1024], f.inline))
+            fnew.append((f.name, __compact_timer_text_v6(f.value)[:1024], f.inline))
         try:
             em.clear_fields()
         except Exception:
             pass
-        for n, v, i in fields:
+        for n, v, i in fnew:
             em.add_field(name=n, value=v, inline=i)
 
-# Wrap the timers embed builder
+# Bind builder wrapper
 try:
-    __orig_builder_v5 = build_timer_embeds_for_categories  # type: ignore
-    async def _build_timer_embeds_for_categories__mobile_wrap_v5(guild, categories):
-        embeds = await __orig_builder_v5(guild, categories)
+    __orig_builder_v6 = build_timer_embeds_for_categories  # type: ignore
+    async def _build_timer_embeds_for_categories__mobile_wrap_v6(guild, categories):
+        embeds = await __orig_builder_v6(guild, categories)
         try:
             for em in embeds or []:
-                __apply_embed_compact(em)
+                __apply_embed_compact_v6(em)
         except Exception as _e:
-            if 'log' in globals(): log.warning(f"[mobile] v5 post-process failed: {_e}")
+            if 'log' in globals(): log.warning(f"[mobile] v6 post-process failed: {_e}")
         return embeds
-    build_timer_embeds_for_categories = _build_timer_embeds_for_categories__mobile_wrap_v5  # type: ignore
-    if 'log' in globals(): log.info("[mobile] wrapper v5 active")
+    build_timer_embeds_for_categories = _build_timer_embeds_for_categories__mobile_wrap_v6  # type: ignore
+    if 'log' in globals(): log.info("[mobile] wrapper v6 active")
 except Exception as _e:
     try:
-        if 'log' in globals(): log.warning(f"[mobile] wrapper v5 not applied: {_e}")
+        if 'log' in globals(): log.warning(f"[mobile] wrapper v6 not applied: {_e}")
     except Exception:
         pass
-
-# Enforce safe layout and rate-limited edits inside TimerToggleView.refresh
-try:
-    if 'TimerToggleView' in globals():
-        __orig_refresh = getattr(TimerToggleView, "refresh", None)
-        if __orig_refresh is not None:
-            async def __refresh_v5(self, interaction):
-                # call original refresh to rebuild view content
-                try:
-                    await __orig_refresh(self, interaction)
-                except TypeError:
-                    await __orig_refresh(self)
-
-                # Layout fix: ensure at most one Select per row, all selects start at row 0.
-                try:
-                    row = 0
-                    sel_on_row = 0
-                    for child in self.children:
-                        if isinstance(child, __d_v5.ui.Select):
-                            if sel_on_row >= 1:
-                                row += 1
-                                sel_on_row = 0
-                            child.row = row
-                            sel_on_row += 1
-                    # Buttons start after selects, wrap at width 5
-                    row += 1
-                    width = 0
-                    for child in self.children:
-                        if isinstance(child, __d_v5.ui.Button):
-                            if width >= 5:
-                                row += 1; width = 0
-                            child.row = row; width += 1
-                except Exception as _e:
-                    if 'log' in globals(): log.warning(f"[mobile] layout set failed: {_e}")
-
-                # Use limiter for edit; avoid duplicate patches
-                try:
-                    msg = await interaction.original_response()
-                    await __edit_limiter.edit_message(
-                        msg,
-                        lambda **k: msg.edit(**k),
-                        view=self
-                    )
-                except Exception as _e:
-                    try:
-                        # Fallback to interaction method if message not created yet
-                        await interaction.edit_original_response(view=self)
-                    except Exception:
-                        if 'log' in globals(): log.warning(f"[rate] refresh edit failed: {_e}")
-            TimerToggleView.refresh = __refresh_v5  # type: ignore
-            if 'log' in globals(): log.info("[mobile] TimerToggleView.refresh patched with layout+rate-limit")
-except Exception as _e:
-    try:
-        if 'log' in globals(): log.warning(f"[mobile] TimerToggleView patch failed: {_e}")
-    except Exception:
-        pass
-# ==================== END v5 ====================
+# ==================== END v6 ====================
 
 
 
