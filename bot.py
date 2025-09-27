@@ -1,4 +1,4 @@
-# -------------------- Celtic Heroes Boss Tracker â€” Foundations (Part 1/4) --------------------
+# -------------------- Celtic Heroes Boss Tracker — Foundations (Part 1/4) --------------------
 # Features in this part:
 # - Env & logging, intents, globals
 # - Render-safe DB path + warmup (WAL) + hardened preflight
@@ -173,7 +173,7 @@ def ts_to_utc(ts: int) -> str:
     try:
         return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     except Exception:
-        return "â€”"
+        return "—"
 
 _nat_re = re.compile(r'(\d+|\D+)')
 def natural_key(s: str) -> List[Any]:
@@ -250,7 +250,7 @@ DEFAULT_COLORS = {
 EMOJI_PALETTE = [
     "ðŸŸ¥","ðŸŸ§","ðŸŸ¨","ðŸŸ©","ðŸŸ¦","ðŸŸª","â¬›","â¬œ","ðŸŸ«",
     "ðŸ”´","ðŸŸ ","ðŸŸ¡","ðŸŸ¢","ðŸ”µ","ðŸŸ£","âš«","âšª","ðŸŸ¤",
-    "â­","âœ¨","âš¡","ðŸ”¥","âš”ï¸","ðŸ—¡ï¸","ðŸ›¡ï¸","ðŸ¹","ðŸ—¿","ðŸ§ª","ðŸ§¿","ðŸ‘‘","ðŸŽ¯","ðŸª™",
+    "â­","✨","âš¡","ðŸ”¥","âš”ï¸","ðŸ—¡ï¸","ðŸ›¡ï¸","ðŸ¹","ðŸ—¿","ðŸ§ª","ðŸ§¿","ðŸ‘‘","ðŸŽ¯","ðŸª™",
     "ðŸ‰","ðŸ²","ðŸ”±","â˜„ï¸","ðŸ§Š","ðŸŒ‹","ðŸŒªï¸","ðŸŒŠ","ðŸŒ«ï¸","ðŸŒ©ï¸","ðŸª½","ðŸª“",
     "0ï¸âƒ£","1ï¸âƒ£","2ï¸âƒ£","3ï¸âƒ£","4ï¸âƒ£","5ï¸âƒ£","6ï¸âƒ£","7ï¸âƒ£","8ï¸âƒ£","9ï¸âƒ£","ðŸ”Ÿ",
 ]
@@ -631,7 +631,7 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
         c = await db.execute("SELECT boss_id,emoji FROM subscription_emojis WHERE guild_id=?", (guild_id,))
         emoji_map = {row[0]: row[1] for row in await c.fetchall()}
     em = discord.Embed(
-        title=f"{category_emoji(cat)} Subscriptions â€” {cat}",
+        title=f"{category_emoji(cat)} Subscriptions — {cat}",
         description="React with the emoji to subscribe/unsubscribe to alerts for these bosses.",
         color=await get_category_color(guild_id, cat)
     )
@@ -642,7 +642,7 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
-        lines.append(f"{e} â€” **{name}**")
+        lines.append(f"{e} — **{name}**")
     bucket = ""; fields: List[str] = []
     for line in lines:
         if len(bucket) + len(line) + 1 > 1000:
@@ -744,14 +744,14 @@ async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_n
     mentions = " ".join(f"<@{uid}>" for uid in subs)
     if phase == "pre":
         left = max(0, when_left or 0)
-        txt = f"â³ {mentions} â€” **{boss_name}** Spawn Time: `{fmt_delta_for_list(left)}` (almost up)."
+        txt = f"â³ {mentions} — **{boss_name}** Spawn Time: `{fmt_delta_for_list(left)}` (almost up)."
     else:
-        txt = f"ðŸ•‘ {mentions} â€” **{boss_name}** Spawn Window has opened!"
+        txt = f"ðŸ•‘ {mentions} — **{boss_name}** Spawn Window has opened!"
     try: await ch.send(txt)
     except Exception as e: log.warning(f"Sub ping failed: {e}")
 
 # -------------------- End of Section 1/4 --------------------
-# -------------------- Part 2/4 â€” prefs, resolve, boot/offline, seed, events --------------------
+# -------------------- Part 2/4 — prefs, resolve, boot/offline, seed, events --------------------
 
 # Per-user timer view prefs (used by slash /timers)
 async def get_user_shown_categories(guild_id: int, user_id: int) -> List[str]:
@@ -931,7 +931,7 @@ SEED_DATA: List[Tuple[str, str, int, int, List[str]]] = [
     ("EG", "Gelebron", 1920, 1680, ["gele"]),                                     # 32h / 28h
     ("EG", "Dhiothu", 2040, 1680, ["dino", "dhio", "d2"]),                        # 34h / 28h
     ("EG", "Bloodthorn", 2040, 1680, ["bt"]),                                     # 34h / 28h
-    ("EG", "Cromâ€™s Manikin", 5760, 1440, ["manikin", "crom", "croms"]),          # 96h / 24h
+    ("EG", "Crom’s Manikin", 5760, 1440, ["manikin", "crom", "croms"]),          # 96h / 24h
 
     # MIDRAIDS
     ("Midraids", "Aggorath", 1200, 960, ["aggy"]),                                # 20h / 16h
@@ -952,7 +952,7 @@ async def ensure_seed_for_guild(guild: discord.Guild):
       - Insert any missing seed bosses with exact spawn/window minutes and aliases.
       - For existing bosses that are in the seed, UPDATE spawn_minutes/window_minutes if they differ.
       - Add missing aliases (ignore dup/unique constraint).
-      - Does NOT delete any extra bosses youâ€™ve added manually.
+      - Does NOT delete any extra bosses you’ve added manually.
     """
     key = f"seed:{SEED_VERSION}:g{guild.id}"
     already = await meta_get(key)
@@ -995,7 +995,7 @@ async def ensure_seed_for_guild(guild: discord.Guild):
                             )
                             alias_added += 1
                         except Exception:
-                            # unique constraint or similar â€“ safe to ignore
+                            # unique constraint or similar – safe to ignore
                             pass
                 else:
                     # Insert new with -Nada default next_spawn_ts
@@ -1135,7 +1135,7 @@ async def on_guild_join(guild: discord.Guild):
     except Exception:
         pass
 
-# Auth cache invalidation â€” if membership changes, re-evaluate gate soon after
+# Auth cache invalidation — if membership changes, re-evaluate gate soon after
 @bot.event
 async def on_member_join(member: discord.Member):
     if member.guild:
@@ -1145,7 +1145,7 @@ async def on_member_join(member: discord.Member):
 async def on_member_remove(member: discord.Member):
     if member.guild:
         _guild_auth_cache.pop(member.guild.id, None)
-# -------------------- Part 3/4 â€” loops, auth-aware message flow, reactions, blacklist, perms --------------------
+# -------------------- Part 3/4 — loops, auth-aware message flow, reactions, blacklist, perms --------------------
 
 # -------- BLACKLIST HELPERS & GLOBAL CHECK --------
 async def is_blacklisted(guild_id: int, user_id: int) -> bool:
@@ -1229,7 +1229,7 @@ async def timers_tick():
             if ch and can_send(ch):
                 left = max(0, int(next_ts) - now)
                 try:
-                    await ch.send(f"â³ **{name}** â€” **Spawn Time**: `{fmt_delta_for_list(left)}` (almost up).")
+                    await ch.send(f"â³ **{name}** — **Spawn Time**: `{fmt_delta_for_list(left)}` (almost up).")
                 except Exception as e:
                     log.warning(f"Pre announce failed: {e}")
             await send_subscription_ping(gid, bid, phase="pre", boss_name=name, when_left=max(0, int(next_ts) - now))
@@ -1256,7 +1256,7 @@ async def timers_tick():
         ch = await resolve_announce_channel(gid, ch_id, cat)
         if ch and can_send(ch):
             try:
-                await ch.send(f"ðŸ•‘ **{name}** â€” **Spawn Window has opened!**")
+                await ch.send(f"ðŸ•‘ **{name}** — **Spawn Window has opened!**")
             except Exception as e:
                 log.warning(f"Window announce failed: {e}")
         await send_subscription_ping(gid, bid, phase="window", boss_name=name)
@@ -1279,7 +1279,7 @@ async def uptime_heartbeat():
         ch = await resolve_heartbeat_channel(g.id)
         if ch and can_send(ch):
             try:
-                await ch.send("âœ… Bot is online â€” timers active.")
+                await ch.send("✔ Bot is online — timers active.")
             except Exception as e:
                 log.warning(f"Heartbeat failed: {e}")
 
@@ -1429,7 +1429,7 @@ class TimerToggleView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This panel isn't yours â€” run `/timers` to get your own.", ephemeral=True)
+            await interaction.response.send_message("This panel isn't yours — run `/timers` to get your own.", ephemeral=True)
             return False
         return True
 
@@ -1505,14 +1505,14 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
                 _ws = ""
             if len(_ws) > 64:
                 _ws = _ws[:64]
-            _win_seg = (f" â€¢ Window: `{_ws}`" if _ws and "open" in _ws.lower() else "")
-            line1 = f"ã€” **{nm}** â€¢ Spawn: `{t}`{_win_seg} ã€•"
+            _win_seg = (f" • Window: `{_ws}`" if _ws and "open" in _ws.lower() else "")
+            line1 = f" **{nm}** • Spawn: `{t}`{_win_seg} "
             eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
             blocks.append("*Lost (-Nada):*")
             for sk, nm, t, ts, win_m in nada_list:
-                blocks.append(f"â€¢ **{nm}** â€” `{t}`")
+                blocks.append(f"• **{nm}** — `{t}`")
         description = "\n\n".join(blocks) if blocks else "No timers."
         em = discord.Embed(
             title=f"{category_emoji(cat)} {cat}",
@@ -1521,49 +1521,49 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
         )
         embeds.append(em)
     return embeds[:10]
-# -------------------- Part 4/4 â€” commands, slash, errors, shutdown, run --------------------
+# -------------------- Part 4/4 — commands, slash, errors, shutdown, run --------------------
 
 # -------- HELP (tidy, no auth-config details) --------
 @bot.command(name="help")
 async def help_cmd(ctx):
     p = await get_guild_prefix(bot, ctx.message)
     lines = [
-        f"**Boss Tracker â€” Commands**",
+        f"**Boss Tracker — Commands**",
         "",
         f"**Essentials**",
-        f"â€¢ Timers: `{p}timers`  â€¢ Intervals: `{p}intervals`",
-        f"â€¢ Quick reset: `{p}<BossOrAlias>`  (e.g., `{p}snorri`)",
+        f"• Timers: `{p}timers`  • Intervals: `{p}intervals`",
+        f"• Quick reset: `{p}<BossOrAlias>`  (e.g., `{p}snorri`)",
         "",
         f"**Boss Ops**",
-        f"â€¢ Add: `{p}boss add \"Name\" <spawn_m> <window_m> [#chan] [pre_m] [category]`",
-        f"â€¢ Killed: `{p}boss killed \"Name\"` â€¢ Increase/Reduce: `{p}boss increase|reduce \"Name\" <m>`",
-        f"â€¢ Idle/Nada: `{p}boss nada \"Name\"` â€¢ All Idle: `{p}boss nadaall`",
-        f"â€¢ Edit: `{p}boss edit \"Name\" <spawn_minutes|window_minutes|pre_announce_min|name|category|sort_key> <value>`",
-        f"â€¢ Channel routing: `{p}boss setchannel \"Name\" #chan` â€¢ All: `{p}boss setchannelall #chan` â€¢ By category: `{p}boss setchannelcat \"Category\" #chan`",
-        f"â€¢ Role for reset: `{p}boss setrole @Role` â€¢ Clear: `{p}boss setrole none` â€¢ Per-boss: `{p}boss setrole \"Name\" @Role`",
-        f"â€¢ Aliases: `{p}boss alias add|remove \"Name\" \"alias\"` â€¢ List: `{p}boss aliases \"Name\"`",
+        f"• Add: `{p}boss add \"Name\" <spawn_m> <window_m> [#chan] [pre_m] [category]`",
+        f"• Killed: `{p}boss killed \"Name\"` • Increase/Reduce: `{p}boss increase|reduce \"Name\" <m>`",
+        f"• Idle/Nada: `{p}boss nada \"Name\"` • All Idle: `{p}boss nadaall`",
+        f"• Edit: `{p}boss edit \"Name\" <spawn_minutes|window_minutes|pre_announce_min|name|category|sort_key> <value>`",
+        f"• Channel routing: `{p}boss setchannel \"Name\" #chan` • All: `{p}boss setchannelall #chan` • By category: `{p}boss setchannelcat \"Category\" #chan`",
+        f"• Role for reset: `{p}boss setrole @Role` • Clear: `{p}boss setrole none` • Per-boss: `{p}boss setrole \"Name\" @Role`",
+        f"• Aliases: `{p}boss alias add|remove \"Name\" \"alias\"` • List: `{p}boss aliases \"Name\"`",
         "",
         f"**Subscriptions**",
-        f"â€¢ Panels channel: `{p}setsubchannel #panels` â€¢ Refresh: `{p}showsubscriptions`",
-        f"â€¢ Ping channel: `{p}setsubpingchannel #pings`",
+        f"• Panels channel: `{p}setsubchannel #panels` • Refresh: `{p}showsubscriptions`",
+        f"• Ping channel: `{p}setsubpingchannel #pings`",
         "",
         f"**Server Settings**",
-        f"â€¢ Announce: `{p}setannounce #chan` â€¢ Category route: `{p}setannounce category \"Category\" #chan`",
-        f"â€¢ ETA: `{p}seteta on|off` â€¢ Colors: `{p}setcatcolor <Category> <#hex>`",
-        f"â€¢ Heartbeat: `{p}setuptime <minutes>` â€¢ HB channel: `{p}setheartbeatchannel #chan`",
-        f"â€¢ Prefix: `{p}setprefix <new>`",
-        f"â€¢ **Pre-announce**: per-boss `{p}setpreannounce \"Name\" <m|off>` â€¢ per-category `{p}setpreannounce category \"Category\" <m|off>` â€¢ all `{p}setpreannounce all <m|off>`",
+        f"• Announce: `{p}setannounce #chan` • Category route: `{p}setannounce category \"Category\" #chan`",
+        f"• ETA: `{p}seteta on|off` • Colors: `{p}setcatcolor <Category> <#hex>`",
+        f"• Heartbeat: `{p}setuptime <minutes>` • HB channel: `{p}setheartbeatchannel #chan`",
+        f"• Prefix: `{p}setprefix <new>`",
+        f"• **Pre-announce**: per-boss `{p}setpreannounce \"Name\" <m|off>` • per-category `{p}setpreannounce category \"Category\" <m|off>` • all `{p}setpreannounce all <m|off>`",
         "",
         f"**Status**",
-        f"â€¢ `{p}status` â€¢ `{p}health`",
+        f"• `{p}status` • `{p}health`",
         "",
         f"**Slash**",
-        f"â€¢ `/timers` (ephemeral with per-user category toggles)",
-        f"â€¢ `/roles_panel channel:<#> title:<...> pairs:\"ðŸ˜€ @Role, ðŸ”” @Role\"`",
+        f"• `/timers` (ephemeral with per-user category toggles)",
+        f"• `/roles_panel channel:<#> title:<...> pairs:\"ðŸ˜€ @Role, ðŸ”” @Role\"`",
     ]
     text = "\n".join(lines)
     if len(text) > 1990:
-        text = text[:1985] + "â€¦"
+        text = text[:1985] + "…"
     if can_send(ctx.channel):
         await ctx.send(text)
 
@@ -1596,18 +1596,18 @@ async def status_cmd(ctx):
         overridden = sorted({norm_cat(row[0]) for row in await c.fetchall()})
     last_start = await meta_get("last_startup_ts")
     hb_label = "off" if int(hb_min) <= 0 else f"every {int(hb_min)}m"
-    def ch(idv): return f"<#{idv}>" if idv else "â€”"
+    def ch(idv): return f"<#{idv}>" if idv else "—"
     lines = [
         f"**Status**",
         f"Prefix: `{prefix}` (change: `{p}setprefix <new>`) ",
         f"Announce channel (global): {ch(ann_id)}",
         f"Category overrides: " + (", ".join(f"{k}â†’{ch(v)}" for k, v in cat_map.items()) if cat_map else "none"),
-        f"Subscription panels: {ch(sub_id)} â€¢ Subscription pings: {ch(sub_ping_id)}",
-        f"Heartbeat: {hb_label} â€¢ Channel: {ch(hb_ch)}",
+        f"Subscription panels: {ch(sub_id)} • Subscription pings: {ch(sub_ping_id)}",
+        f"Heartbeat: {hb_label} • Channel: {ch(hb_ch)}",
         f"UTC ETA: {'on' if show_eta else 'off'}",
-        f"Bosses: {boss_count} â€¢ Due now: {due} â€¢ -Nada: {nada}",
+        f"Bosses: {boss_count} • Due now: {due} • -Nada: {nada}",
         f"Color overrides: {', '.join(overridden) if overridden else 'none'}",
-        f"Last startup: {ts_to_utc(int(last_start)) if last_start and last_start.isdigit() else 'â€”'}",
+        f"Last startup: {ts_to_utc(int(last_start)) if last_start and last_start.isdigit() else '—'}",
     ]
     await ctx.send("\n".join(lines))
 
@@ -1631,7 +1631,7 @@ async def health_cmd(ctx):
         f"Tables OK: {'yes' if not missing else 'no'}{'' if not missing else ' (missing: ' + ', '.join(missing) + ')'}",
         f"Timers loop: {'running' if timers_tick.is_running() else 'stopped'}",
         f"Heartbeat loop: {'running' if uptime_heartbeat.is_running() else 'stopped'}",
-        f"Last timer tick: {ts_to_utc(_last_timer_tick_ts) if _last_timer_tick_ts else 'â€”'}"
+        f"Last timer tick: {ts_to_utc(_last_timer_tick_ts) if _last_timer_tick_ts else '—'}"
         + (f" ({human_ago(tick_age)})" if tick_age is not None else ""),
         f"guild_config row present: {'yes' if cfg_rows > 0 else 'no'}",
     ]
@@ -1685,15 +1685,15 @@ async def timers_cmd(ctx):
                 _ws = ""
             if len(_ws) > 64:
                 _ws = _ws[:64]
-            _win_seg = (f" â€¢ Window: `{_ws}`" if _ws and "open" in _ws.lower() else "")
-            line1 = f"ã€” **{nm}** â€¢ Spawn: `{t}`{_win_seg} ã€•"
+            _win_seg = (f" • Window: `{_ws}`" if _ws and "open" in _ws.lower() else "")
+            line1 = f" **{nm}** • Spawn: `{t}`{_win_seg} "
             from datetime import datetime, timezone
             eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
             blocks.append("*Lost (-Nada):*")
             for sk, nm, t, ts, win_m in nada_list:
-                blocks.append(f"â€¢ **{nm}** â€” `{t}`")
+                blocks.append(f"• **{nm}** — `{t}`")
         description = "\n\n".join(blocks) if blocks else "No timers."
         em = discord.Embed(
             title=f"{category_emoji(cat)} {cat}",
@@ -1745,9 +1745,9 @@ async def send_intervals_list(ctx):
         items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
         lines: List[str] = []
         for sk, nm, sp, win, pre in items:
-            lines.append(f"â€¢ **{nm}** â€” Respawn: {sp}m â€¢ Window: {win}m â€¢ Pre: {pre}m")
+            lines.append(f"• **{nm}** — Respawn: {sp}m • Window: {win}m • Pre: {pre}m")
         em = discord.Embed(
-            title=f"{category_emoji(cat)} {cat} â€” Intervals",
+            title=f"{category_emoji(cat)} {cat} — Intervals",
             description="",
             color=await get_category_color(gid, cat)
         )
@@ -1766,9 +1766,9 @@ async def send_intervals_list(ctx):
         try:
             await ctx.send(embed=em)
         except Exception:
-            text_fallback = f"**{cat} â€” Intervals**\n" + "\n".join(lines)
+            text_fallback = f"**{cat} — Intervals**\n" + "\n".join(lines)
             if len(text_fallback) > 1990:
-                text_fallback = text_fallback[:1985] + "â€¦"
+                text_fallback = text_fallback[:1985] + "…"
             await ctx.send(text_fallback)
 
 @bot.command(name="intervals")
@@ -1845,7 +1845,7 @@ async def boss_add(ctx, *args):
             (ctx.guild.id, ch_id, name, int(spawn_minutes), int(window_minutes), next_spawn, int(pre_min), ctx.author.id, category)
         )
         await db.commit()
-    await ctx.send(f":white_check_mark: Added **{name}** â€” every {spawn_minutes}m, window {window_minutes}m, pre {pre_min}m, cat {category}.")
+    await ctx.send(f":white_check_mark: Added **{name}** — every {spawn_minutes}m, window {window_minutes}m, pre {pre_min}m, cat {category}.")
     await refresh_subscription_messages(ctx.guild)
 
 @boss_group.command(name="idleall")
@@ -2253,7 +2253,7 @@ async def blacklist_show(ctx):
 @commands.has_permissions(manage_guild=True)
 async def setprefix_cmd(ctx, new_prefix: str):
     if not new_prefix or len(new_prefix) > 5:
-        return await ctx.send("Pick a prefix 1â€“5 characters.")
+        return await ctx.send("Pick a prefix 1–5 characters.")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO guild_config (guild_id,prefix) VALUES (?,?) "
@@ -2380,7 +2380,7 @@ async def setsubchannel_cmd(ctx, channel: discord.TextChannel):
             (ctx.guild.id, channel.id)
         )
         await db.commit()
-    await ctx.send(f":white_check_mark: Subscription **panels** channel set to {channel.mention}. Rebuilding panelsâ€¦")
+    await ctx.send(f":white_check_mark: Subscription **panels** channel set to {channel.mention}. Rebuilding panels…")
     await refresh_subscription_messages(ctx.guild)
     await ctx.send(":white_check_mark: Subscription panels are ready.")
 
@@ -2408,9 +2408,9 @@ async def setpreannounce_cmd(ctx, *, args: str):
     """
     Dedicated family to set pre-announce minutes.
     Usage:
-      â€¢ !setpreannounce "Boss Name" <m|off>
-      â€¢ !setpreannounce category "<Category>" <m|off>
-      â€¢ !setpreannounce all <m|off>
+      • !setpreannounce "Boss Name" <m|off>
+      • !setpreannounce category "<Category>" <m|off>
+      • !setpreannounce all <m|off>
     Notes:
       - 'off' / 'none' / '0' disables pre-announces (sets 0).
       - Minutes are capped between 0 and 10080 (7 days) to avoid accidental huge values.
@@ -2533,7 +2533,7 @@ async def roles_panel(interaction: discord.Interaction,
         parsed.append((emoji, role_id, role.name))
     if not parsed:
         return await interaction.response.send_message("No valid emoji/role pairs found.", ephemeral=True)
-    desc_lines = [f"{em} â€” <@&{rid}> ({rname})" for em, rid, rname in parsed]
+    desc_lines = [f"{em} — <@&{rid}> ({rname})" for em, rid, rname in parsed]
     embed = discord.Embed(title=title, description="\n".join(desc_lines), color=0x4aa3ff)
     try:
         msg = await ch.send(embed=embed)
@@ -2661,15 +2661,15 @@ async def main():
     except KeyboardInterrupt:
         await graceful_shutdown()
 
-# -------------------- Lixing & Market (Slash Add-on) â€” Simplified --------------------
+# -------------------- Lixing & Market (Slash Add-on) — Simplified --------------------
 # Design summary:
 # - Two sections: 'market' and 'lix'
 # - Listings last 24h (TTL). Digest pings every 6h in the configured channel if any listings are active.
 # - Market listing captures: item, trades_ok, price_text (optional), taking_offers (bool), notes (optional).
-#   â€¢ Button "Make Offer" (if taking_offers): opens a modal; offers are saved and echoed in a thread + top 3 shown on main embed.
-#   â€¢ Button "Close" for author/admin.
+#   • Button "Make Offer" (if taking_offers): opens a modal; offers are saved and echoed in a thread + top 3 shown on main embed.
+#   • Button "Close" for author/admin.
 # - Lix listing captures: name, class, level_text, lixes_text (number or 'N/A'), notes (optional).
-#   â€¢ Button "Close" for author/admin.
+#   • Button "Close" for author/admin.
 # - Admin/author commands: set_channel, set_role, post, browse, close, clear.
 # - Keeps anti-spam + auth gate via global bot checks.
 
@@ -2805,7 +2805,7 @@ def _author_or_admin(inter: discord.Interaction, author_id: int) -> bool:
 def _market_embed(item: str, trades_ok: bool, price_text: Optional[str], taking_offers: bool, notes: Optional[str],
                   author: discord.Member, expires_ts: int, recent_offers: Optional[List[Tuple[str, str]]] = None) -> discord.Embed:
     em = discord.Embed(
-        title=f"ðŸ›’ Market â€” {item}",
+        title=f"ðŸ›’ Market — {item}",
         color=0xf1c40f
     )
     em.add_field(name="Trades Accepted", value=("Yes" if trades_ok else "No"), inline=True)
@@ -2819,7 +2819,7 @@ def _market_embed(item: str, trades_ok: bool, price_text: Optional[str], taking_
     em.add_field(name="Expires", value=ts_to_utc(expires_ts), inline=True)
     if recent_offers:
         # recent_offers: List[(user_mention, amount_text)]
-        lines = [f"{who}: **{amt}**" + (f" â€” {note}" if note else "") for who, amt, note in recent_offers]  # type: ignore
+        lines = [f"{who}: **{amt}**" + (f" — {note}" if note else "") for who, amt, note in recent_offers]  # type: ignore
         em.add_field(name="Recent Offers", value="\n".join(lines)[:1024], inline=False)
     return em
 
@@ -2903,13 +2903,13 @@ class OfferModal(discord.ui.Modal, title="Submit Offer"):
             thread = interaction.guild.get_thread(int(self.thread_id))
             if thread and can_send(thread):
                 try:
-                    await thread.send(f"{interaction.user.mention} offered **{amt}**" + (f" â€” {note}" if note else ""))
+                    await thread.send(f"{interaction.user.mention} offered **{amt}**" + (f" — {note}" if note else ""))
                 except Exception:
                     pass
         # Update main embed (top 3 offers)
         if listing_row:
             await _update_market_message_embed(interaction.guild, listing_row)
-        await ireply(interaction, "âœ… Offer submitted.", ephemeral=True)
+        await ireply(interaction, "✔ Offer submitted.", ephemeral=True)
 
 class ListingView(discord.ui.View):
     def __init__(self, *, listing_id: int, section: str, author_id: int, taking_offers: bool, thread_id: Optional[int]):
@@ -2961,7 +2961,7 @@ class ListingView(discord.ui.View):
                         if th: await th.delete(reason="Listing closed")
                 except Exception:
                     pass
-            await ireply(interaction, "âœ… Listing closed.", ephemeral=True)
+            await ireply(interaction, "✔ Listing closed.", ephemeral=True)
 
 # ---------- Commands ----------
 lix_group = app_commands.Group(name="lix", description="Lixing (LFG) listings")
@@ -2972,14 +2972,14 @@ market_group = app_commands.Group(name="market", description="Market listings")
 async def market_set_channel(inter: discord.Interaction, channel: discord.TextChannel):
     if not await lm_require_manage(inter): return
     await lm_set_section_channel(inter.guild.id, LM_SEC_MARKET, channel.id)
-    await ireply(inter, f"âœ… Market posts will go to {channel.mention}.", ephemeral=True)
+    await ireply(inter, f"✔ Market posts will go to {channel.mention}.", ephemeral=True)
 
 @market_group.command(name="set_role", description="Set/clear a role to mention in Market digests")
 @app_commands.describe(role="Role to mention (omit to clear)")
 async def market_set_role(inter: discord.Interaction, role: Optional[discord.Role] = None):
     if not await lm_require_manage(inter): return
     await lm_set_section_role(inter.guild.id, LM_SEC_MARKET, role.id if role else None)
-    await ireply(inter, ("âœ… Role cleared." if role is None else f"âœ… Will mention {role.mention}."), ephemeral=True)
+    await ireply(inter, ("✔ Role cleared." if role is None else f"✔ Will mention {role.mention}."), ephemeral=True)
 
 @market_group.command(name="post", description="Post a Market listing (24h).")
 @app_commands.describe(
@@ -2997,7 +2997,7 @@ async def market_post(inter: discord.Interaction, item: str, trades: bool, offer
                              (gid, LM_SEC_MARKET, inter.user.id))
         last_created = (await c.fetchone())[0]
     if last_created and now - int(last_created) < LM_POST_RATE_SECONDS:
-        return await ireply(inter, "You're posting a little fast â€” try again in a moment.", ephemeral=True)
+        return await ireply(inter, "You're posting a little fast — try again in a moment.", ephemeral=True)
 
     ch_id = await lm_get_section_channel(gid, LM_SEC_MARKET)
     ch = inter.guild.get_channel(ch_id) if ch_id else inter.channel
@@ -3016,7 +3016,7 @@ async def market_post(inter: discord.Interaction, item: str, trades: bool, offer
     thread_id = None
     # create a thread to collect offers/log
     try:
-        th = await msg.create_thread(name=f"{item} â€” offers")
+        th = await msg.create_thread(name=f"{item} — offers")
         thread_id = th.id
     except Exception:
         thread_id = None
@@ -3040,7 +3040,7 @@ async def market_post(inter: discord.Interaction, item: str, trades: bool, offer
     except Exception:
         pass
 
-    await inter.followup.send(f"âœ… Market post created in {ch.mention}.", ephemeral=True)
+    await inter.followup.send(f"✔ Market post created in {ch.mention}.", ephemeral=True)
 
 @market_group.command(name="browse", description="Browse active Market listings")
 @app_commands.describe(mine="Only show your listings (true/false)")
@@ -3058,7 +3058,7 @@ async def market_browse(inter: discord.Interaction, mine: Optional[bool] = False
         return await ireply(inter, "No active Market listings.", ephemeral=True)
     lines = []
     for idv, item, author_id, ch_id, msg_id, exp in rows:
-        lines.append(f"**#{idv}** â€” **{item}** by <@{author_id}> â€¢ expires {fmt_delta_for_list(int(exp)-now)} â€¢ <#{ch_id}> [[jump]](https://discord.com/channels/{inter.guild.id}/{int(ch_id)}/{int(msg_id)})")
+        lines.append(f"**#{idv}** — **{item}** by <@{author_id}> • expires {fmt_delta_for_list(int(exp)-now)} • <#{ch_id}> [[jump]](https://discord.com/channels/{inter.guild.id}/{int(ch_id)}/{int(msg_id)})")
     await ireply(inter, "\n".join(lines)[:1900], ephemeral=True)
 
 @market_group.command(name="close", description="Close your Market listing")
@@ -3090,7 +3090,7 @@ async def market_close(inter: discord.Interaction, id: int):
             if th: await th.delete(reason="Listing closed")
         except Exception:
             pass
-    await ireply(inter, f"âœ… Closed Market listing #{id}.", ephemeral=True)
+    await ireply(inter, f"✔ Closed Market listing #{id}.", ephemeral=True)
 
 @market_group.command(name="clear", description="Clear ALL active Market listings (Admin/Manage Messages)")
 async def market_clear(inter: discord.Interaction):
@@ -3124,14 +3124,14 @@ async def market_clear(inter: discord.Interaction):
 async def lix_set_channel(inter: discord.Interaction, channel: discord.TextChannel):
     if not await lm_require_manage(inter): return
     await lm_set_section_channel(inter.guild.id, LM_SEC_LIX, channel.id)
-    await ireply(inter, f"âœ… Lixing posts will go to {channel.mention}.", ephemeral=True)
+    await ireply(inter, f"✔ Lixing posts will go to {channel.mention}.", ephemeral=True)
 
 @lix_group.command(name="set_role", description="Set/clear a role to mention in Lixing digests")
 @app_commands.describe(role="Role to mention (omit to clear)")
 async def lix_set_role(inter: discord.Interaction, role: Optional[discord.Role] = None):
     if not await lm_require_manage(inter): return
     await lm_set_section_role(inter.guild.id, LM_SEC_LIX, role.id if role else None)
-    await ireply(inter, ("âœ… Role cleared." if role is None else f"âœ… Will mention {role.mention}."), ephemeral=True)
+    await ireply(inter, ("✔ Role cleared." if role is None else f"✔ Will mention {role.mention}."), ephemeral=True)
 
 @lix_group.command(name="post", description="Post a Lixing (LFG) card (24h).")
 @app_commands.describe(
@@ -3149,7 +3149,7 @@ async def lix_post(inter: discord.Interaction, name: str, class_: str, level: st
                              (gid, LM_SEC_LIX, inter.user.id))
         last_created = (await c.fetchone())[0]
     if last_created and now - int(last_created) < LM_POST_RATE_SECONDS:
-        return await ireply(inter, "You're posting a little fast â€” try again in a moment.", ephemeral=True)
+        return await ireply(inter, "You're posting a little fast — try again in a moment.", ephemeral=True)
 
     ch_id = await lm_get_section_channel(gid, LM_SEC_LIX)
     ch = inter.guild.get_channel(ch_id) if ch_id else inter.channel
@@ -3189,7 +3189,7 @@ async def lix_post(inter: discord.Interaction, name: str, class_: str, level: st
     except Exception:
         pass
 
-    await inter.followup.send(f"âœ… Lixing post created in {ch.mention}.", ephemeral=True)
+    await inter.followup.send(f"✔ Lixing post created in {ch.mention}.", ephemeral=True)
 
 @lix_group.command(name="browse", description="Browse active Lixing (LFG) posts")
 @app_commands.describe(mine="Only show your posts (true/false)")
@@ -3207,7 +3207,7 @@ async def lix_browse(inter: discord.Interaction, mine: Optional[bool] = False):
         return await ireply(inter, "No active Lixing posts.", ephemeral=True)
     lines = []
     for idv, pn, pc, lvl, lx, author_id, ch_id, msg_id, exp in rows:
-        lines.append(f"**#{idv}** â€” **{pn}** ({pc}, {lvl}, lixes: {lx}) by <@{author_id}> â€¢ expires {fmt_delta_for_list(int(exp)-now)} â€¢ <#{ch_id}> [[jump]](https://discord.com/channels/{inter.guild.id}/{int(ch_id)}/{int(msg_id)})")
+        lines.append(f"**#{idv}** — **{pn}** ({pc}, {lvl}, lixes: {lx}) by <@{author_id}> • expires {fmt_delta_for_list(int(exp)-now)} • <#{ch_id}> [[jump]](https://discord.com/channels/{inter.guild.id}/{int(ch_id)}/{int(msg_id)})")
     await ireply(inter, "\n".join(lines)[:1900], ephemeral=True)
 
 @lix_group.command(name="close", description="Close your Lixing post")
@@ -3233,7 +3233,7 @@ async def lix_close(inter: discord.Interaction, id: int):
             await msg.delete()
         except Exception:
             pass
-    await ireply(inter, f"âœ… Closed Lixing post #{id}.", ephemeral=True)
+    await ireply(inter, f"✔ Closed Lixing post #{id}.", ephemeral=True)
 
 @lix_group.command(name="clear", description="Clear ALL active Lixing posts (Admin/Manage Messages)")
 async def lix_clear(inter: discord.Interaction):
@@ -3315,8 +3315,8 @@ async def lm_digest_loop():
             # compact digest with jump links
             lines = []
             for idv, cid, mid, author_id in rows[:LM_BROWSE_LIMIT]:
-                lines.append(f"â€¢ **#{idv}** by <@{author_id}> â€” [[jump]](https://discord.com/channels/{g.id}/{int(cid)}/{int(mid)})")
-            title = "ðŸ›’ Market â€” Active (24h)" if section == LM_SEC_MARKET else "ðŸ§­ Lixing â€” Active (24h)"
+                lines.append(f"• **#{idv}** by <@{author_id}> — [[jump]](https://discord.com/channels/{g.id}/{int(cid)}/{int(mid)})")
+            title = "ðŸ›’ Market — Active (24h)" if section == LM_SEC_MARKET else "ðŸ§­ Lixing — Active (24h)"
             try:
                 await ch.send(content=mention + title + "\n" + "\n".join(lines),
                               allowed_mentions=discord.AllowedMentions(roles=True))
@@ -3399,7 +3399,7 @@ class AltClassSelect(discord.ui.Select):
 # Optional alt modal (name + level only; class comes from dropdown)
 class AltModal(discord.ui.Modal, title="Add Alt (optional)"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
-    alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
+    alt_level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3, placeholder="e.g., 120")
 
     def __init__(self, parent_view: "RosterConfirmView"):
         super().__init__(timeout=300)
@@ -3435,9 +3435,9 @@ class RosterConfirmView(discord.ui.View):
 
     def _summary_text(self) -> str:
         mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
-        alts_line = ", ".join([f"{a.get('name','?')} â€¢ {a.get('level','?')} â€¢ {a.get('class','?')}" for a in (alts or [])]) if alts else "N/A"
+        alts_line = ", ".join([f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in (alts or [])]) if alts else "N/A"
         extra = f"\nSelect an alt class and press 'Add Alt' to include optional alts." 
-        return f"Review your info:\n**Main:** {mname} â€¢ {mlvl} â€¢ {mcls}\n**Alts:** {alts_line}\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "") + extra
+        return f"Review your info:\n**Main:** {mname} • {mlvl} • {mcls}\n**Alts:** {alts_line}\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "") + extra
 
     @discord.ui.button(label="Add Alt", style=discord.ButtonStyle.secondary)
     async def add_alt(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -3676,7 +3676,7 @@ async def __bind_config_commands_and_sync():
 
 def _alts_line(alts):
     try:
-        return ", ".join(f"{a.get('name','?')} â€¢ {a.get('level','?')} â€¢ {a.get('class','?')}" for a in (alts or [])) or "N/A"
+        return ", ".join(f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in (alts or [])) or "N/A"
     except Exception:
         return "N/A"
 import json as _json
@@ -3740,8 +3740,8 @@ async def _upsert_roster(gid: int, uid: int, main_name: str, main_level: int, ma
 
 def _build_roster_embed(member: discord.Member, main_name: str, main_level: int, main_class: str, alts: list, tz_raw: str, tz_norm: str):
     title = f"New Member: {member.display_name}"
-    alts_line = ", ".join([f"{a.get('name','?')} â€¢ {a.get('level','?')} â€¢ {a.get('class','?')}" for a in (alts or [])]) if alts else "N/A"
-    desc = f"**Main:** {main_name} â€¢ {main_level} â€¢ {main_class}\n**Alts:** {alts_line}\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+    alts_line = ", ".join([f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in (alts or [])]) if alts else "N/A"
+    desc = f"**Main:** {main_name} • {main_level} • {main_class}\n**Alts:** {alts_line}\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
     e = discord.Embed(title=title, description=desc, color=discord.Color.blurple())
     e.set_footer(text="Welcome!")
     return e
@@ -3768,7 +3768,7 @@ class RosterStartView(discord.ui.View):
 
 class RosterModal(discord.ui.Modal, title="Start Roster"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
-    main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
+    main_level = discord.ui.TextInput(label="Main level (1–250)", placeholder="215", required=True, max_length=3)
     alts = discord.ui.TextInput(label="Alts (name / level / class; or N/A)", style=discord.TextStyle.paragraph, required=False, placeholder="N/A", max_length=400)
     timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
 
@@ -3798,7 +3798,7 @@ class RosterModal(discord.ui.Modal, title="Start Roster"):
                     alts.append({"name": nm[:32], "level": lv, "class": _norm_class(cl)})
         tz_raw, tz_norm = _parse_timezone(str(self.timezone))
 
-        summary = f"**Main:** {main_name} â€¢ {lvl} â€¢ {cls}\n**Alts:** " + (_alts_line(alts)) + f"\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        summary = f"**Main:** {main_name} • {lvl} • {cls}\n**Alts:** " + (_alts_line(alts)) + f"\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
         view = RosterConfirmView(main_name, lvl, cls, alts, tz_raw, tz_norm)
         await interaction.response.send_message(f"Review your info:\n{summary}", ephemeral=True, view=view)
 
@@ -3852,7 +3852,7 @@ class AltClassSelect(discord.ui.Select):
 
 class AltModal(discord.ui.Modal, title="Add Alt"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
-    alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
+    alt_level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3, placeholder="e.g., 120")
 
     def __init__(self, parent_view: "RosterConfirmView"):
         super().__init__(timeout=300)
@@ -3893,10 +3893,10 @@ class RosterConfirmView(discord.ui.View):
     def _summary_text(self) -> str:
         mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
         try:
-            alts_line = ", ".join(f"{a.get('name','?')} â€¢ {a.get('level','?')} â€¢ {a.get('class','?')}" for a in (alts or [])) or "N/A"
+            alts_line = ", ".join(f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in (alts or [])) or "N/A"
         except Exception:
             alts_line = "N/A"
-        return f"Review your info:\n**Main:** {mname} â€¢ {mlvl} â€¢ {mcls}\n**Alts:** {alts_line}\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        return f"Review your info:\n**Main:** {mname} • {mlvl} • {mcls}\n**Alts:** {alts_line}\n**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
 
     @discord.ui.button(label="Add Alt", style=discord.ButtonStyle.secondary)
     async def add_alt(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4123,7 +4123,7 @@ def _enable_add_alt_on_view(view: discord.ui.View, selected: str):
             if isinstance(child, discord.ui.Button) and getattr(child, "custom_id", "") == "add_alt_btn":
                 child.disabled = False
                 child.style = discord.ButtonStyle.primary
-                child.label = f"Add Alt â€” {selected}"
+                child.label = f"Add Alt — {selected}"
     except Exception:
         pass
 
@@ -4167,12 +4167,12 @@ class RosterConfirmView(discord.ui.View):
     def _summary_text(self) -> str:
         mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
         try:
-            alts_line = ", ".join(f"{a.get('name','?')} â€¢ {a.get('level','?')} â€¢ {a.get('class','?')}" for a in (alts or [])) or "N/A"
+            alts_line = ", ".join(f"{a.get('name','?')} • {a.get('level','?')} • {a.get('class','?')}" for a in (alts or [])) or "N/A"
         except Exception:
             alts_line = "N/A"
         return (
-            f"Step 2/2 â€” Review:\n"
-            f"**Main:** {mname} â€¢ {mlvl} â€¢ {mcls}\n"
+            f"Step 2/2 — Review:\n"
+            f"**Main:** {mname} • {mlvl} • {mcls}\n"
             f"**Alts:** {alts_line}\n"
             f"**Timezone:** {tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
         )
@@ -4187,7 +4187,7 @@ class RosterConfirmView(discord.ui.View):
             # Lightweight inline modal substitute
             modal = discord.ui.Modal(title="Add Alt")
             name = discord.ui.TextInput(label="Alt name", required=False, max_length=32)
-            level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3)
+            level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3)
             modal.add_item(name); modal.add_item(level)
             async def on_submit(modal_inter: discord.Interaction):
                 nm = str(name).strip()
@@ -4252,7 +4252,7 @@ class RosterStartView(discord.ui.View):
         super().__init__(timeout=600)
         self.selected_class = None
         opts = [discord.SelectOption(label=c, value=c) for c in ["Ranger","Rogue","Warrior","Mage","Druid"]]
-        sel = discord.ui.Select(placeholder="Step 1/2 â€” pick your MAIN class", min_values=1, max_values=1, options=opts)
+        sel = discord.ui.Select(placeholder="Step 1/2 — pick your MAIN class", min_values=1, max_values=1, options=opts)
         async def sel_cb(interaction: discord.Interaction):
             self.selected_class = sel.values[0]
             await interaction.response.edit_message(content=f"Main class selected: **{self.selected_class}**\nNext: press **Continue**.", view=self)
@@ -4266,9 +4266,9 @@ class RosterStartView(discord.ui.View):
         await interaction.response.send_modal(RosterModal(self.selected_class))
 
 # Force our RosterModal without any alts textbox
-class RosterModal(discord.ui.Modal, title="Start Roster â€” Step 1/2"):
+class RosterModal(discord.ui.Modal, title="Start Roster — Step 1/2"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
-    main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
+    main_level = discord.ui.TextInput(label="Main level (1–250)", placeholder="215", required=True, max_length=3)
     timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
 
     def __init__(self, selected_class: str):
@@ -4289,7 +4289,7 @@ class RosterModal(discord.ui.Modal, title="Start Roster â€” Step 1/2"):
         tz_raw, tz_norm = _parse_timezone(str(self.timezone))
 
         view = RosterConfirmView(main_name, lvl, cls, [], tz_raw, tz_norm)
-        hint = "\n\nStep 2/2 â€” Optional alts: pick a class, press **Add Alt**, or press **Join the server!** to finish."
+        hint = "\n\nStep 2/2 — Optional alts: pick a class, press **Add Alt**, or press **Join the server!** to finish."
         await interaction.response.send_message(view._summary_text() + hint, ephemeral=True, view=view)
 
 # Improve AltClassSelect callback to enable the button and show hint
@@ -4302,7 +4302,7 @@ for cls in list(globals().values()):
                 if isinstance(ch, discord.ui.Button) and getattr(ch, "custom_id", "") == "add_alt_btn":
                     ch.disabled = False
                     ch.style = discord.ButtonStyle.primary
-                    ch.label = f"Add Alt â€” {self.view.selected_alt_class}"
+                    ch.label = f"Add Alt — {self.view.selected_alt_class}"
             hint = "\n\nNext: press **Add Alt** to enter name and level, or **Join the server!** to finish."
             await interaction.response.edit_message(content=self.view._summary_text() + hint, view=self.view)
         cls.callback = _cb
@@ -4424,12 +4424,12 @@ async def _roster_edit_or_post(guild: discord.Guild, member: discord.Member, row
 # ===== Player self-service level updates =====
 from discord import app_commands as _ac_levels
 
-@_ac_levels.command(name="my-level-main", description="Update your main level (1â€“250) without reposting")
+@_ac_levels.command(name="my-level-main", description="Update your main level (1–250) without reposting")
 async def my_level_main(interaction: discord.Interaction, level: int):
     if not interaction.guild:
         return await interaction.response.send_message("Guild only.", ephemeral=True)
     if not (1 <= level <= 250):
-        return await interaction.response.send_message("Level must be 1â€“250.", ephemeral=True)
+        return await interaction.response.send_message("Level must be 1–250.", ephemeral=True)
     gid = interaction.guild.id; uid = interaction.user.id
     row = await _roster_load(gid, uid)
     if not row:
@@ -4450,7 +4450,7 @@ async def my_level_alt(interaction: discord.Interaction, slot: int, level: int):
     if not interaction.guild:
         return await interaction.response.send_message("Guild only.", ephemeral=True)
     if not (1 <= level <= 250):
-        return await interaction.response.send_message("Level must be 1â€“250.", ephemeral=True)
+        return await interaction.response.send_message("Level must be 1–250.", ephemeral=True)
     if slot < 1:
         return await interaction.response.send_message("Slot must be 1 or greater.", ephemeral=True)
     gid = interaction.guild.id; uid = interaction.user.id
@@ -4598,11 +4598,11 @@ def _build_roster_embed_final(member: discord.Member, main_name: str, main_level
             nm = str(a.get("name","?"))[:32] if isinstance(a, dict) else "?"
             lv = __coerce_lvl_v3(a.get("level") if isinstance(a, dict) else None)
             cls = a.get("class","?") if isinstance(a, dict) else "?"
-            alt_lines.append(f"{i}. {nm} â€¢ {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} â€¢ {cls}")
+            alt_lines.append(f"{i}. {nm} • {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} • {cls}")
     except Exception:
         alt_lines = []
     m_lv = __coerce_lvl_v3(main_level) or main_level
-    main_line = f"**âœ¨ {main_name} â€¢ Lv {m_lv} â€¢ {main_class} âœ¨**"
+    main_line = f"**✨ {main_name} • Lv {m_lv} • {main_class} ✨**"
     e = discord.Embed(title=f"New Member: {member.display_name}", color=discord.Color.blurple())
     e.add_field(name="Main", value=main_line, inline=False)
     e.add_field(name="Alts", value="\n".join(alt_lines) if alt_lines else "N/A", inline=False)
@@ -4659,7 +4659,7 @@ def __altv_norm(entry):
         lvl = __altv_coerce_level(entry[1] if len(entry)>1 else None)
         cls = str(entry[2]).strip()[:16] if len(entry)>2 else "?"
     else:
-        parts = [p.strip() for p in str(entry).split("â€¢")]
+        parts = [p.strip() for p in str(entry).split("•")]
         if parts: name = parts[0][:32] or "?"
         lvl = __altv_coerce_level(parts[1] if len(parts)>=2 else None)
         if len(parts)>=3: cls = parts[2][:16] or "?"
@@ -4671,7 +4671,7 @@ async def __altv_notify_missing(gid: int, uid: int, bad_rows):
         if not user: return
         details = "\n".join(f"- #{i+1}: name='{r.get('name','?')}', level='{r.get('level')}', class='{r.get('class','?')}'" for i,r in enumerate(bad_rows))
         txt = ("Your alt submission had missing fields. "
-               "Each alt must include **Name**, **Level 1â€“250**, and **Class**.\n"
+               "Each alt must include **Name**, **Level 1–250**, and **Class**.\n"
                f"The following were skipped:\n{details}\n"
                "Use the intake again and fill all fields.")
         try: await user.send(txt)
@@ -4694,15 +4694,15 @@ def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw,
         lines = []
         for i, a in enumerate(norm, 1):
             lv = a.get("level")
-            lines.append(f"{i}. {a['name']} â€¢ {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} â€¢ {a['class']}")
+            lines.append(f"{i}. {a['name']} • {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} • {a['class']}")
         e = __discord_altv.Embed(title=f"New Member: {member.display_name}", color=__discord_altv.Color.blurple())
-        e.add_field(name="Main", value=f"**âœ¨ {main_name} â€¢ Lv {main_level} â€¢ {main_class} âœ¨**", inline=False)
+        e.add_field(name="Main", value=f"**✨ {main_name} • Lv {main_level} • {main_class} ✨**", inline=False)
         e.add_field(name="Alts", value=("\n".join(lines) if lines else "N/A"), inline=False)
         tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
         e.add_field(name="Timezone", value=tz or "N/A", inline=False)
         e.set_footer(text="Welcome!"); return e
     except Exception:
-        return __discord_altv.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} â€¢ {main_level} â€¢ {main_class}")
+        return __discord_altv.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} • {main_level} • {main_class}")
 
 @bot.listen("on_ready")
 async def __altv_bind_embed():
@@ -4791,7 +4791,7 @@ def __altv2_coerce_level(v):
     return None
 
 def __altv2_norm(entry):
-    # Accept dicts with arbitrary key names and strings like "Name â€¢ 150 â€¢ Mage"
+    # Accept dicts with arbitrary key names and strings like "Name • 150 • Mage"
     name, lvl, cls = "?", None, "?"
     if isinstance(entry, dict):
         name = str(__altv2_pick(entry, "name") or entry.get("toon") or entry.get("main") or "?").strip()[:32] or "?"
@@ -4803,7 +4803,7 @@ def __altv2_norm(entry):
         lvl = __altv2_coerce_level(entry[1] if len(entry)>1 else None)
         cls = str(entry[2]).strip()[:16] if len(entry)>2 else "?"
     else:
-        parts = [p.strip() for p in str(entry).split("â€¢")]
+        parts = [p.strip() for p in str(entry).split("•")]
         if parts: name = parts[0][:32] or "?"
         lvl = __altv2_coerce_level(parts[1] if len(parts)>=2 else None)
         cls = parts[2][:16] if len(parts)>=3 else "?"
@@ -4814,7 +4814,7 @@ async def __altv2_notify_missing(gid: int, uid: int, bad_rows):
         user = (bot.get_user(uid) or await bot.fetch_user(uid))
         if not user: return
         details = "\n".join(f"- #{i+1}: name='{r.get('name','?')}', level='{r.get('level')}', class='{r.get('class','?')}'" for i,r in enumerate(bad_rows))
-        msg = ("Your alt submission had missing fields. Each alt must include **Name**, **Level 1â€“250**, and **Class**.\n"
+        msg = ("Your alt submission had missing fields. Each alt must include **Name**, **Level 1–250**, and **Class**.\n"
                f"Skipped:\n{details}")
         try: await user.send(msg)
         except __d_altv2.Forbidden: pass
@@ -4837,9 +4837,9 @@ def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw,
         lines = []
         for i, a in enumerate(norm, 1):
             lv = a.get("level")
-            lines.append(f"{i}. {a['name']} â€¢ {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} â€¢ {a['class']}")
+            lines.append(f"{i}. {a['name']} • {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} • {a['class']}")
         e = __d_altv2.Embed(title=f"New Member", color=__d_altv2.Color.blurple())
-        e.add_field(name="Main", value=f"**âœ¨ {main_name} â€¢ Lv {main_level} â€¢ {main_class} âœ¨**", inline=False)
+        e.add_field(name="Main", value=f"**✨ {main_name} • Lv {main_level} • {main_class} ✨**", inline=False)
         e.add_field(name="Alts", value=("\n".join(lines) if lines else "N/A"), inline=False)
         tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
         e.add_field(name="Timezone", value=tz or "N/A", inline=False)
@@ -4847,7 +4847,7 @@ def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw,
         e.set_footer(text="Welcome!")
         return e
     except Exception:
-        return __d_altv2.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} â€¢ {main_level} â€¢ {main_class}")
+        return __d_altv2.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} • {main_level} • {main_class}")
 
 # Wrap storage to enforce required alt fields when user added any alts
 try:
@@ -4932,7 +4932,7 @@ def __alts_norm_one(a):
         return {"name": name, "class": cls, "level": __alts_coerce_level(lvl)}
     if isinstance(a, (list,tuple)) and a:
         return {"name": str(a[0]).strip()[:32] or "?", "class": (str(a[2]).strip()[:16] if len(a)>2 else "?"), "level": __alts_coerce_level(a[1] if len(a)>1 else None)}
-    parts = [p.strip() for p in str(a).split("â€¢")]
+    parts = [p.strip() for p in str(a).split("•")]
     return {"name": (parts[0][:32] if parts else "?") or "?", "class": (parts[2][:16] if len(parts)>=3 else "?") or "?", "level": __alts_coerce_level(parts[1] if len(parts)>=2 else None)}
 def __alts_norm_list(alts):
     try:
@@ -4949,7 +4949,7 @@ try:
         lvl_txt  = (getattr(self.alt_level, "value", "") or "").strip()
         lvl = __alts_coerce_level(lvl_txt)
         if not name_txt or lvl is None:
-            return await interaction.response.send_message("Alt name and a numeric level 1â€“250 are required.", ephemeral=True)
+            return await interaction.response.send_message("Alt name and a numeric level 1–250 are required.", ephemeral=True)
         cls = getattr(self.parent_view, "selected_alt_class", None) or "Ranger"
         mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
         alt = {"name": name_txt[:32], "level": int(lvl), "class": cls}
@@ -4969,8 +4969,8 @@ def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw,
         try: return __orig_build_embed(member, main_name, main_level, main_class, norm, tz_raw, tz_norm)
         except Exception: pass
     e = __d_alts.Embed(title=f"New Member: {getattr(member,'display_name','?')}", color=__d_alts.Color.blurple())
-    e.add_field(name="Main", value=f"**âœ¨ {main_name} â€¢ Lv {__alts_coerce_level(main_level) or main_level} â€¢ {main_class} âœ¨**", inline=False)
-    alt_lines = [f"{i}. {a['name']} â€¢ {'Lv '+str(a['level']) if isinstance(a['level'],int) else 'Lv N/A'} â€¢ {a['class']}" for i,a in enumerate(norm,1)] or ["N/A"]
+    e.add_field(name="Main", value=f"**✨ {main_name} • Lv {__alts_coerce_level(main_level) or main_level} • {main_class} ✨**", inline=False)
+    alt_lines = [f"{i}. {a['name']} • {'Lv '+str(a['level']) if isinstance(a['level'],int) else 'Lv N/A'} • {a['class']}" for i,a in enumerate(norm,1)] or ["N/A"]
     e.add_field(name="Alts", value="\n".join(alt_lines), inline=False)
     tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
     e.add_field(name="Timezone", value=tz or "N/A", inline=False)
@@ -5057,7 +5057,7 @@ except Exception as _e_fix_sel:
 
 # ==================== MOBILE TIMER UX: persist selection + compact embeds ====================
 # Goals: 
-# 1) Multi-select defaults to userâ€™s last selection (only those selected). 
+# 1) Multi-select defaults to user’s last selection (only those selected). 
 # 2) Persist selection on change. 
 # 3) Compact timer embeds for mobile without removing data.
 try:
@@ -5165,10 +5165,10 @@ async def _build_timer_embeds_compact(guild: dm.Guild, categories: _List[str]):
             delta = tts - now; t = fmt_delta_for_list(delta)
             (nada_list if t == "-Nada" else normal).append((sk, nm, t, tts, win))
         lines: List[str] = []
-        # compact one-liners: Name â€” `t` Â· Window[ Â· ETA HH:MM]
+        # compact one-liners: Name — `t` Â· Window[ Â· ETA HH:MM]
         for _, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            seg = f"â€¢ **{nm}** â€” `{t}` Â· {win_status}"
+            seg = f"• **{nm}** — `{t}` Â· {win_status}"
             if show_eta and (ts - now) > 0:
                 try:
                     from datetime import datetime, timezone
@@ -5179,7 +5179,7 @@ async def _build_timer_embeds_compact(guild: dm.Guild, categories: _List[str]):
         if nada_list:
             lines.append("*Lost (-Nada)*")
             for _, nm, t, *_ in nada_list:
-                lines.append(f"  Â· **{nm}** â€” `{t}`")
+                lines.append(f"  Â· **{nm}** — `{t}`")
         desc = "\n".join(lines) if lines else "No timers."
         em = dm.Embed(
             title=f"{category_emoji(cat)} {cat}",
@@ -5198,7 +5198,7 @@ except Exception:
     pass
 # ==================== END MOBILE TIMER UX ====================
 
-# ==================== MOBILE TIMER UX â€” persist-only defaults + compact list (additive) ====================
+# ==================== MOBILE TIMER UX — persist-only defaults + compact list (additive) ====================
 # Baseline preserved. Adds:
 # 1) Multi-select that preselects ONLY previously toggled categories.
 # 2) Selection saves immediately and refreshes view.
@@ -5302,10 +5302,10 @@ async def _build_timer_embeds_compact(guild, categories):
                 delta = tts - now
                 t = fmt_delta_for_list(delta)
                 if t == "-Nada":
-                    nada.append(f"Â· **{nm}** â€” `{t}`")
+                    nada.append(f"Â· **{nm}** — `{t}`")
                     continue
                 stat = window_label(now, tts, win)
-                seg = f"â€¢ **{nm}** â€” `{t}` Â· {stat}"
+                seg = f"• **{nm}** — `{t}` Â· {stat}"
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
                     seg += f" Â· {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
@@ -5401,7 +5401,7 @@ async def _build_timer_embeds_count_missing_only(guild: dm.Guild, categories: Li
                     missing_count += 1
                     continue
                 win_status = window_label(now, tts, win)
-                seg = f"â€¢ **{nm}** `{t}` Â· {win_status}"
+                seg = f"• **{nm}** `{t}` Â· {win_status}"
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
                     seg += f" Â· {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
