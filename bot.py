@@ -5424,6 +5424,108 @@ except Exception:
     pass
 # ==================== END MOBILE TIMERS patch ====================
 
+# ==================== MOBILE TIMERS PRESENTATION WRAPPER v3 (additive, non-destructive) ====================
+# Compact mobile layout:
+#   - Collapse -Nada into "Missing: N" (kept from v2).
+#   - Reflow per-boss lines to two lines:
+#       "**Name**  `T`" on line 1
+#       "> _window: STATUS_" on line 2
+#   - Remove bullets and extra padding. Single newline between bosses.
+try:
+    import re as __re_flow
+except Exception:
+    __re_flow = None
+
+def __collapse_missing(__txt: str) -> str:
+    # Convert any explicit -Nada lines into a single "Missing: N" and tighten spacing.
+    if not __txt:
+        return __txt
+    missing = 0
+    kept = []
+    for ln in __txt.splitlines():
+        if "-Nada" in ln or "`-Nada`" in ln:
+            missing += 1
+            continue
+        # Drop legacy header
+        if ln.strip().lower().startswith("*lost (-nada):*"):
+            continue
+        kept.append(ln)
+    if missing:
+        kept.append(f"*Missing:* **{missing}**")
+    out = "\n".join(kept)
+    # Collapse 2+ blank lines to single
+    out = __re_flow.sub(r"\n{2,}", "\n", out)
+    return out
+
+def __reflow_one_block(txt: str) -> str:
+    if not txt:
+        return txt
+    lines = txt.splitlines()
+    res = []
+    for ln in lines:
+        # Pattern A: bullet style "• **Name** — `T` · STATUS"
+        m = __re_flow.match(r"^\s*•\s+\*\*(.+?)\*\*\s+—\s+`([^`]+)`\s+·\s+(.+)\s*$", ln)
+        if m:
+            name, timer, status = m.groups()
+            res.append(f"**{name}**  `{timer}`")
+            if not status.lower().startswith("window"):
+                status = f"window {status}"
+            res.append(f"> _{status}_")
+            continue
+        # Pattern B: bracketed style "〔 **Name** • Spawn: `T` • Window: `WIN` 〕"
+        m2 = __re_flow.search(r"\*\*(.+?)\*\*.*Spawn:\s*`([^`]+)`.*Window:\s*`([^`]+)`", ln)
+        if m2:
+            name, timer, win = m2.groups()
+            res.append(f"**{name}**  `{timer}`")
+            res.append(f"> _window: {win}_")
+            continue
+        # ETA lines
+        if ln.strip().lower().startswith(("> *eta", ">*eta")):
+            res.append(__re_flow.sub(r"\s+", " ", ln.strip()))
+            continue
+        # Pass-through
+        res.append(ln.rstrip())
+    # Tighten
+    res = [l.replace("• ", "") for l in res]
+    out = "\n".join(res)
+    out = __re_flow.sub(r"\n{2,}", "\n", out)
+    return out
+
+def __compress_and_reflow_any(txt: str) -> str:
+    return __reflow_one_block(__collapse_missing(txt))
+
+try:
+    __orig_builder_v3 = build_timer_embeds_for_categories  # type: ignore
+    async def _build_timer_embeds_for_categories__mobile_wrap_v3(guild, categories):
+        embeds = await __orig_builder_v3(guild, categories)
+        try:
+            for em in embeds or []:
+                if getattr(em, "description", None):
+                    em.description = __compress_and_reflow_any(em.description)[:4096]
+                if getattr(em, "fields", None):
+                    fields = []
+                    for f in em.fields:
+                        fields.append((f.name, __compress_and_reflow_any(f.value)[:1024], f.inline))
+                    try:
+                        em.clear_fields()
+                    except Exception:
+                        pass
+                    for n, v, i in fields:
+                        em.add_field(name=n, value=v, inline=i)
+        except Exception as _e:
+            if 'log' in globals():
+                log.warning(f"[mobile] v3 post-process failed: {_e}")
+        return embeds
+    build_timer_embeds_for_categories = _build_timer_embeds_for_categories__mobile_wrap_v3  # type: ignore
+    if 'log' in globals(): log.info("[mobile] wrapper v3: compact two-line boss + Missing count, tightened spacing")
+except Exception as _e:
+    try:
+        if 'log' in globals(): log.warning(f"[mobile] builder wrapper v3 not applied: {_e}")
+    except Exception:
+        pass
+# ==================== END WRAPPER v3 ====================
+
+
 
 
 
