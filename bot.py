@@ -4748,6 +4748,152 @@ async def _upsert_roster(gid, uid, main_name, main_level, main_class, alts, tz_r
         await db.commit()
 # ==================== END ALT INTAKE: STRICT VALIDATION + RENDER ====================
 
+# ==================== ALT INTAKE: STRICTER VALIDATION + ROBUST RENDER ====================
+# Guarantees alt name, level(1-250), class are present when user chooses to add an alt.
+# Roster embed always shows per-alt "Lv N".
+import json as __json_altv2, re as __re_altv2, asyncio as __aio_altv2
+import aiosqlite as __asql_altv2
+import discord as __d_altv2
+
+def __altv2_pick(d: dict, contains: str, fallback: str = None):
+    contains = contains.lower()
+    for k,v in d.items():
+        if contains in str(k).lower():
+            return v
+    return d.get(fallback) if fallback else None
+
+def __altv2_coerce_level(v):
+    if v is None: return None
+    try:
+        if isinstance(v, int): n = v
+        else:
+            m = __re_altv2.search(r'\d{1,3}', str(v))
+            n = int(m.group(0)) if m else None
+        if n is None: return None
+        if 1 <= n <= 250: return n
+    except Exception:
+        pass
+    return None
+
+def __altv2_norm(entry):
+    # Accept dicts with arbitrary key names and strings like "Name • 150 • Mage"
+    name, lvl, cls = "?", None, "?"
+    if isinstance(entry, dict):
+        name = str(__altv2_pick(entry, "name") or entry.get("toon") or entry.get("main") or "?").strip()[:32] or "?"
+        raw_lvl = (__altv2_pick(entry, "lev") or __altv2_pick(entry, "lvl") or entry.get("level") or entry.get("alt_level"))
+        lvl = __altv2_coerce_level(raw_lvl)
+        cls = str(__altv2_pick(entry, "class") or entry.get("cls") or "?").strip()[:16] or "?"
+    elif isinstance(entry, (list,tuple)):
+        name = str(entry[0]).strip()[:32] if entry else "?"
+        lvl = __altv2_coerce_level(entry[1] if len(entry)>1 else None)
+        cls = str(entry[2]).strip()[:16] if len(entry)>2 else "?"
+    else:
+        parts = [p.strip() for p in str(entry).split("•")]
+        if parts: name = parts[0][:32] or "?"
+        lvl = __altv2_coerce_level(parts[1] if len(parts)>=2 else None)
+        cls = parts[2][:16] if len(parts)>=3 else "?"
+    return {"name": name, "level": lvl, "class": cls}
+
+async def __altv2_notify_missing(gid: int, uid: int, bad_rows):
+    try:
+        user = (bot.get_user(uid) or await bot.fetch_user(uid))
+        if not user: return
+        details = "\n".join(f"- #{i+1}: name='{r.get('name','?')}', level='{r.get('level')}', class='{r.get('class','?')}'" for i,r in enumerate(bad_rows))
+        msg = ("Your alt submission had missing fields. Each alt must include **Name**, **Level 1–250**, and **Class**.\n"
+               f"Skipped:\n{details}")
+        try: await user.send(msg)
+        except __d_altv2.Forbidden: pass
+    except Exception: pass
+
+# Wrap the roster embed builder to render levels per alt line
+try:
+    __orig_build_roster_embed_altv2 = _build_roster_embed  # noqa
+except NameError:
+    __orig_build_roster_embed_altv2 = None
+
+def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw, tz_norm):
+    try:
+        if isinstance(alts, str):
+            try: raw = __json_altv2.loads(alts) or []
+            except Exception: raw = []
+        else:
+            raw = alts or []
+        norm = [__altv2_norm(x) for x in raw]
+        lines = []
+        for i, a in enumerate(norm, 1):
+            lv = a.get("level")
+            lines.append(f"{i}. {a['name']} • {'Lv '+str(lv) if isinstance(lv,int) else 'Lv N/A'} • {a['class']}")
+        e = __d_altv2.Embed(title=f"New Member", color=__d_altv2.Color.blurple())
+        e.add_field(name="Main", value=f"**✨ {main_name} • Lv {main_level} • {main_class} ✨**", inline=False)
+        e.add_field(name="Alts", value=("\n".join(lines) if lines else "N/A"), inline=False)
+        tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+        e.add_field(name="Timezone", value=tz or "N/A", inline=False)
+        e.set_author(name=getattr(member, "display_name", "New member"))
+        e.set_footer(text="Welcome!")
+        return e
+    except Exception:
+        return __d_altv2.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} • {main_level} • {main_class}")
+
+# Wrap storage to enforce required alt fields when user added any alts
+try:
+    __orig_upsert_roster_altv2 = _upsert_roster  # noqa
+except NameError:
+    __orig_upsert_roster_altv2 = None
+
+async def _upsert_roster(gid, uid, main_name, main_level, main_class, alts, tz_raw, tz_norm):
+    def _as_list(a):
+        if isinstance(a, str):
+            try: return __json_altv2.loads(a) or []
+            except Exception: return []
+        return list(a or [])
+    norm = [__altv2_norm(x) for x in _as_list(alts)]
+    bad = [r for r in norm if (not r["name"] or r["name"]=="?") or (not isinstance(r["level"], int)) or (r["class"]=="?")]
+    if bad:
+        try: __aio_altv2.get_running_loop().create_task(__altv2_notify_missing(gid, uid, bad))
+        except Exception: pass
+    norm_valid = [r for r in norm if r not in bad]
+    if __orig_upsert_roster_altv2:
+        return await __orig_upsert_roster_altv2(gid, uid, main_name, main_level, main_class, norm_valid, tz_raw, tz_norm)
+    # Fallback minimal store if original missing
+    async with __asql_altv2.connect(DB_PATH) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS roster_members (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            main_name TEXT NOT NULL,
+            main_level INTEGER NOT NULL,
+            main_class TEXT NOT NULL,
+            alts_json TEXT NOT NULL,
+            timezone_raw TEXT NOT NULL,
+            timezone_norm TEXT,
+            submitted_at INTEGER,
+            updated_at INTEGER,
+            roster_msg_id INTEGER,
+            PRIMARY KEY (guild_id, user_id)
+        )""")
+        await db.execute("""INSERT INTO roster_members
+            (guild_id,user_id,main_name,main_level,main_class,alts_json,timezone_raw,timezone_norm,submitted_at,updated_at,roster_msg_id)
+            VALUES (?,?,?,?,?,?,?, ?, strftime('%s','now'),strftime('%s','now'),
+                COALESCE((SELECT roster_msg_id FROM roster_members WHERE guild_id=? AND user_id=?),NULL))
+            ON CONFLICT(guild_id,user_id) DO UPDATE SET
+                main_name=excluded.main_name,
+                main_level=excluded.main_level,
+                main_class=excluded.main_class,
+                alts_json=excluded.alts_json,
+                timezone_raw=excluded.timezone_raw,
+                timezone_norm=excluded.timezone_norm,
+                updated_at=excluded.updated_at
+        """, (gid, uid, main_name, main_level, main_class, __json_altv2.dumps(norm_valid), tz_raw, tz_norm, gid, uid))
+        await db.commit()
+
+@bot.listen("on_ready")
+async def __altv2_bind_log():
+    try:
+        globals()["_build_roster_embed"] = _build_roster_embed
+        if 'log' in globals(): log.info("[altfix] v2 embed builder bound")
+    except Exception: pass
+# ==================== END ALT INTAKE PATCH ====================
+
+
 
 
 
