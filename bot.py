@@ -4615,7 +4615,7 @@ async def __warn_ephemeral_db_if_needed():
 # ==================== END PATCH ====================
 
 # ==================== ALT INTAKE: STRICT VALIDATION + RENDER (no removals) ====================
-# Enforces required fields for alts on save. Fixes roster embed to always display level.
+# Require alt name, level(1-250), class when user adds an alt. Render per line with level.
 import json as __json_altv, re as __re_altv, asyncio as __asyncio_altv
 import aiosqlite as __aiosqlite_altv
 import discord as __discord_altv
@@ -4659,21 +4659,16 @@ async def __altv_notify_missing(gid: int, uid: int, bad_rows):
                "Each alt must include **Name**, **Level 1–250**, and **Class**.\n"
                f"The following were skipped:\n{details}\n"
                "Use the intake again and fill all fields.")
-        try:
-            await user.send(txt)
-        except __discord_altv.Forbidden:
-            pass
-    except Exception:
-        pass
+        try: await user.send(txt)
+        except __discord_altv.Forbidden: pass
+    except Exception: pass
 
-# Wrap roster embed builder
 try:
     __orig_build_roster_embed_altv = _build_roster_embed  # noqa: F821
 except NameError:
     __orig_build_roster_embed_altv = None
 
 def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw, tz_norm):
-    # Always render explicit levels for alts
     try:
         if isinstance(alts, str):
             try: alts_raw = __json_altv.loads(alts) or []
@@ -4690,8 +4685,7 @@ def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw,
         e.add_field(name="Alts", value=("\n".join(lines) if lines else "N/A"), inline=False)
         tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
         e.add_field(name="Timezone", value=tz or "N/A", inline=False)
-        e.set_footer(text="Welcome!")
-        return e
+        e.set_footer(text="Welcome!"); return e
     except Exception:
         return __discord_altv.Embed(title=f"New Member: {getattr(member,'display_name','?')}", description=f"{main_name} • {main_level} • {main_class}")
 
@@ -4700,17 +4694,15 @@ async def __altv_bind_embed():
     try:
         globals()["_build_roster_embed"] = _build_roster_embed
         if 'log' in globals(): log.info("[altv] embed builder bound")
-    except Exception:
-        pass
+    except Exception: pass
 
-# Wrap _upsert_roster to enforce required alt fields
 try:
     __orig_upsert_roster_altv = _upsert_roster  # noqa: F821
 except NameError:
     __orig_upsert_roster_altv = None
 
 async def _upsert_roster(gid, uid, main_name, main_level, main_class, alts, tz_raw, tz_norm):
-    # Normalize and require alt fields if any alts were provided
+    # Normalize and require alt fields if any provided
     def _norm_list(a):
         if isinstance(a, str):
             try: return __json_altv.loads(a) or []
@@ -4719,15 +4711,13 @@ async def _upsert_roster(gid, uid, main_name, main_level, main_class, alts, tz_r
     norm = [__altv_norm(x) for x in _norm_list(alts)]
     bad = [r for r in norm if not r["name"] or r["name"]=="?" or r["class"]=="?" or not isinstance(r["level"], int)]
     if bad:
-        # notify user and drop invalid alts; keep valid ones only
-        try: __asyncio_altv.create_task(__altv_notify_missing(gid, uid, bad))
+        try: import asyncio as _aio; _aio.get_running_loop().create_task(__altv_notify_missing(gid, uid, bad))
         except Exception: pass
     norm_valid = [r for r in norm if r not in bad]
-    # hand off to original with sanitized list
     if __orig_upsert_roster_altv:
         return await __orig_upsert_roster_altv(gid, uid, main_name, main_level, main_class, norm_valid, tz_raw, tz_norm)
-    # fallback store if original missing
-    async with __aiosqlite_altv.connect(DB_PATH) as db:  # DB_PATH from globals
+    # Fallback store
+    async with __aiosqlite_altv.connect(DB_PATH) as db:
         await db.execute("""CREATE TABLE IF NOT EXISTS roster_members (
             guild_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
