@@ -1499,14 +1499,17 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            line1 = f"〔 **{nm}** • Spawn: `{t}` • Window: `{win_status}` 〕"
-            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
-            blocks.append(line1 + (eta_line if eta_line else ""))
+            blocks.append(f"**{nm}**")
+            blocks.append(f"`Spawn:` {t}")
+            blocks.append(f"_window: {win_status}_")
+            if show_eta and (ts - now) > 0:
+                blocks.append(f"> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*")
+            # spacer (single blank line) between bosses
+            blocks.append("")
         if nada_list:
-            blocks.append("*Lost (-Nada):*")
-            for sk, nm, t, ts, win_m in nada_list:
-                blocks.append(f"• **{nm}** — `{t}`")
-        description = "\n\n".join(blocks) if blocks else "No timers."
+            blocks.append(f"*Missing:* **{len(nada_list)}**")
+        # compact spacing: single newlines
+        description = "\n".join([ln for ln in blocks if ln is not None]) if blocks else "No timers."
         em = discord.Embed(
             title=f"{category_emoji(cat)} {cat}",
             description=description,
@@ -1672,14 +1675,17 @@ async def timers_cmd(ctx):
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            line1 = f"〔 **{nm}** • Spawn: `{t}` • Window: `{win_status}` 〕"
-            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
-            blocks.append(line1 + (eta_line if eta_line else ""))
+            blocks.append(f"**{nm}**")
+            blocks.append(f"`Spawn:` {t}")
+            blocks.append(f"_window: {win_status}_")
+            if show_eta and (ts - now) > 0:
+                blocks.append(f"> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*")
+            # spacer (single blank line) between bosses
+            blocks.append("")
         if nada_list:
-            blocks.append("*Lost (-Nada):*")
-            for sk, nm, t, ts, win_m in nada_list:
-                blocks.append(f"• **{nm}** — `{t}`")
-        description = "\n\n".join(blocks) if blocks else "No timers."
+            blocks.append(f"*Missing:* **{len(nada_list)}**")
+        # compact spacing: single newlines
+        description = "\n".join([ln for ln in blocks if ln is not None]) if blocks else "No timers."
         em = discord.Embed(
             title=f"{category_emoji(cat)} {cat}",
             description=description,
@@ -5417,132 +5423,6 @@ try:
 except Exception:
     pass
 # ==================== END MOBILE TIMERS patch ====================
-
-# ==================== MOBILE TIMER VISUAL TWEAKS (additive) ====================
-# Keeps baseline. Improves per-boss formatting for mobile, adds compact "Missing" count.
-# Two-line entry per boss:
-#   Line 1: **Name**  `⏱ T`
-#   Line 2: > *window (pending/open/closed …)*  (smaller look via blockquote+italic)
-try:
-    import discord as __dm_mob
-    import aiosqlite as __sq_mob
-    from typing import List as __L, Dict as __D, Tuple as __T
-except Exception:
-    __dm_mob = None
-
-try:
-    __orig_builder_mobile = build_timer_embeds_for_categories  # type: ignore
-except Exception:
-    __orig_builder_mobile = None
-
-def __window_tag(now_s: int, next_ts: int, window_m: int) -> str | None:
-    # Returns textual tag for the small second line. None means treat as "missing".
-    delta = next_ts - now_s
-    if delta >= 0:
-        return "window (pending)"
-    open_s = -delta
-    wsec = max(0, int(window_m) * 60)
-    if open_s <= wsec:
-        left_m = max(0, (wsec - open_s) // 60)
-        return f"window (open • {left_m}m left)"
-    after_close = open_s - wsec
-    try:
-        grace = int(NADA_GRACE_SECONDS)
-    except Exception:
-        grace = 1800  # default 30m grace
-    if after_close <= grace:
-        return "window (closed)"
-    return None  # outside grace -> "Missing"
-
-async def _build_timer_embeds_mobile(guild: __dm_mob.Guild, categories: __L[str]) -> __L[__dm_mob.Embed]:
-    try:
-        gid = guild.id
-        show_eta = await get_show_eta(gid) if 'get_show_eta' in globals() else 0
-        if not categories:
-            return []
-        async with __sq_mob.connect(DB_PATH) as db:
-            q = ",".join("?" for _ in categories)
-            cur = await db.execute(
-                f"SELECT name,next_spawn_ts,category,sort_key,window_minutes "
-                f"FROM bosses WHERE guild_id=? AND category IN ({q})",
-                (gid, *[norm_cat(c) for c in categories])
-            )
-            rows = await cur.fetchall()
-
-        now = now_ts()
-        # Group under the labels supplied in `categories` preserving order
-        grouped: __D[str, __L[__T[str,str,int,int]]] = {c: [] for c in categories}
-        for name, ts, cat, sk, win in rows:
-            nc = norm_cat(cat)
-            for lbl in categories:
-                if norm_cat(lbl) == nc:
-                    grouped[lbl].append((sk or "", str(name), int(ts), int(win)))
-                    break
-
-        # Sort each bucket naturally
-        for cat in grouped:
-            grouped[cat].sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
-
-        embeds: __L[__dm_mob.Embed] = []
-        for cat in categories:
-            items = grouped.get(cat, [])
-            if not items:
-                em = __dm_mob.Embed(
-                    title=f"{category_emoji(cat)} {cat}",
-                    description="No timers.",
-                    color=await get_category_color(gid, cat)
-                )
-                embeds.append(em); continue
-
-            chunks: __L[str] = []
-            missing_count = 0
-
-            for _sk, nm, tts, win_m in items:
-                tag = __window_tag(now, tts, win_m)
-                if tag is None:
-                    # Missing timer in this category
-                    missing_count += 1
-                    continue
-                delta = tts - now
-                t = fmt_delta_for_list(delta)
-
-                # Line 1: bold name + inline-code timer with clock icon
-                line1 = f"**{nm}**  `⏱ {t}`"
-                if show_eta and delta > 0:
-                    from datetime import datetime, timezone
-                    line1 += f"  · ETA {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('%H:%M UTC')}"
-
-                # Line 2: smaller "window (...)" using blockquote + italics
-                line2 = f"> *{tag}*"
-
-                chunks.append(line1 + "\n" + line2)
-
-            if missing_count:
-                chunks.append(f"*Missing:* **{missing_count}**")
-
-            # Slightly more space between entries, still compact
-            desc = "\n\n".join(chunks) if chunks else "No timers."
-            em = __dm_mob.Embed(
-                title=f"{category_emoji(cat)} {cat}",
-                description=desc[:4096],
-                color=await get_category_color(gid, cat)
-            )
-            embeds.append(em)
-        return embeds[:10]
-    except Exception as e:
-        if 'log' in globals(): log.warning(f"[mobile] timers mobile builder failed: {e}")
-        if __orig_builder_mobile:
-            return await __orig_builder_mobile(guild, categories)
-        return []
-
-# Activate the improved mobile builder without removing any other behavior.
-try:
-    build_timer_embeds_for_categories = _build_timer_embeds_mobile  # type: ignore
-    if 'log' in globals(): log.info("[mobile] timers: two-line entries + compact 'Missing' count enabled")
-except Exception:
-    pass
-# ==================== END MOBILE TIMER VISUAL TWEAKS ====================
-
 
 
 
