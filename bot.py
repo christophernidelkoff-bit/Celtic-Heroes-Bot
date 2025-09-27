@@ -706,7 +706,16 @@ async def refresh_subscription_messages(guild: discord.Guild):
         if existing_id:
             try:
                 message = await channel.fetch_message(existing_id)
-                await message.edit(content=content, embed=embed)
+                # Skip edit if identical to reduce 429s
+                try:
+                    cur = (message.content or "", message.embeds[0].to_dict() if message.embeds else {})
+                except Exception:
+                    cur = ("", {})
+                new = (content or "", embed.to_dict() if embed else {})
+                if cur != new:
+                    await message.edit(content=content, embed=embed)
+                else:
+                    if 'log' in globals(): log.info("[panels] skipped identical edit for %s", cat)
             except Exception:
                 try:
                     message = await channel.send(content=content, embed=embed)
