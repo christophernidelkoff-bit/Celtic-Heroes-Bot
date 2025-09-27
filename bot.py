@@ -12,6 +12,120 @@
 
 from __future__ import annotations
 
+# ===================== V7 DEDUPE SHIM + MOBILE LAYOUT SAFEGUARDS (inserted) =====================
+# Provide globals expected by legacy dedupe wrapper and a safe send dedupe implementation.
+try:
+    __hash_v7
+except NameError:
+    class __HashV7Shim:
+        @staticmethod
+        def sha1():
+            import hashlib
+            return hashlib.sha1()
+    __hash_v7 = __HashV7Shim()
+# Some builds access the name-mangled variant from inside class _SendDedupeV7
+try:
+    _SendDedupeV7__hash_v7
+except NameError:
+    _SendDedupeV7__hash_v7 = __hash_v7  # alias
+
+try:
+    __send_dedupe_v7
+except NameError:
+    import time as _t_v7, hashlib as _h_v7
+    class __SendDedupeShimV7:
+        def __init__(self): self.cache = {}
+        def _hash(self, content, embeds):
+            h = _h_v7.sha1()
+            h.update((content or "").encode("utf-8"))
+            for em in embeds or []:
+                try: d = em.to_dict()
+                except Exception: d = {}
+                for k in ("title","description","color"):
+                    h.update(str(d.get(k, "")).encode("utf-8"))
+                for f in d.get("fields", []) or []:
+                    h.update(str(f.get("name","")).encode("utf-8"))
+                    h.update(str(f.get("value","")).encode("utf-8"))
+                    h.update(b"1" if f.get("inline") else b"0")
+            return h.hexdigest()
+        async def send(self, obj, orig_send, *a, **k):
+            ch_id = getattr(obj, "id", None) or getattr(getattr(obj, "channel", None), "id", None)
+            content = k.get("content")
+            embeds = k.get("embeds") or ([k["embed"]] if "embed" in k else [])
+            key = (ch_id, self._hash(content, embeds))
+            now = _t_v7.time()
+            # purge >120s
+            for kk, (ts, _) in list(self.cache.items()):
+                if now - ts > 120: self.cache.pop(kk, None)
+            if key in self.cache and now - self.cache[key][0] < 120:
+                try:
+                    msg_id = self.cache[key][1]
+                    ch = obj if hasattr(obj, "fetch_message") else getattr(obj, "channel", None)
+                    if ch and hasattr(ch, "fetch_message"):
+                        return await ch.fetch_message(msg_id)
+                except Exception:
+                    pass
+            msg = await orig_send(*a, **k)
+            try: self.cache[key] = (now, msg.id)
+            except Exception: pass
+            return msg
+    __send_dedupe_v7 = __SendDedupeShimV7()
+
+# Layout guard: avoid "item would not fit at row ... (.. > 5 width)"
+try:
+    import discord as _d_gl
+    _orig_add_item_guard = _d_gl.ui.View.add_item
+    def __row_used_width(view, row):
+        import discord as _d
+        w = 0
+        for c in view.children:
+            r = getattr(c, "row", 0) if getattr(c, "row", None) is not None else 0
+            if r != row: continue
+            if isinstance(c, _d.ui.Select): w += 5
+            elif isinstance(c, _d.ui.Button): w += 1
+            else: w += 1
+        return w
+    def __first_fit_row(view, width, start_row):
+        row = max(start_row, 0)
+        # limited to 5 rows; bump until enough capacity
+        for _ in range(25):
+            if __row_used_width(view, row) + width <= 5:
+                return row
+            row += 1
+        return row
+    def __is_timer_toggle(view): return type(view).__name__ == "TimerToggleView"
+    def __add_item_layout_guard(self, item):
+        import discord as _d
+        if __is_timer_toggle(self):
+            # Select gets full row; buttons pack after last select row
+            if isinstance(item, _d.ui.Select):
+                width = 5
+                last_row = max([getattr(c, "row", 0) if getattr(c, "row", None) is not None else 0
+                                for c in self.children], default=-1)
+                item.row = __first_fit_row(self, width, last_row + 1)
+                # Mirror current selection state as defaults
+                try:
+                    shown = set(getattr(self, "shown", []) or [])
+                    for opt in getattr(item, "options", []) or []:
+                        opt.default = (opt.value in shown)
+                except Exception:
+                    pass
+            elif isinstance(item, _d.ui.Button):
+                width = 1
+                sel_rows = [getattr(c, "row", 0) if getattr(c, "row", None) is not None else 0
+                            for c in self.children if isinstance(c, _d.ui.Select)]
+                start_row = (max(sel_rows) + 1) if sel_rows else 0
+                item.row = __first_fit_row(self, width, start_row)
+        return _orig_add_item_guard(self, item)
+    _d_gl.ui.View.add_item = __add_item_layout_guard
+    try:
+        if 'log' in globals(): log.info("[mobile] View.add_item layout guard installed")
+    except Exception:
+        pass
+except Exception:
+    pass
+# =================== END INSERT ===================
+
 # ==================== EARLY SCHEMA BOOTSTRAP (sync; placed after future imports) ====================
 # Ensures required tables/columns exist *before* any background tasks run.
 try:
@@ -5579,282 +5693,3 @@ except Exception as _e:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-# ===================== MOBILE + DEDUPE + SCHEMA GUARD PATCH (additive, non-destructive) =====================
-# 1) Fix legacy NameError for _SendDedupeV7__hash_v7 and __send_dedupe_v7
-try:
-    _SendDedupeV7__hash_v7
-except NameError:
-    class _SendDedupeV7__hash_v7_cls:
-        @staticmethod
-        def sha1():
-            import hashlib
-            return hashlib.sha1()
-    _SendDedupeV7__hash_v7 = _SendDedupeV7__hash_v7_cls()
-
-try:
-    __send_dedupe_v7
-except NameError:
-    import time as _t_v7, hashlib as _h_v7
-    class __SimpleDedupeV7:
-        def __init__(self): self.cache = {}
-        def _hash(self, content, embeds):
-            h = _h_v7.sha1()
-            h.update((content or "").encode("utf-8"))
-            for em in embeds or []:
-                try: d = em.to_dict()
-                except Exception: d = {}
-                for k in ("title","description","color"):
-                    h.update(str(d.get(k, "")).encode("utf-8"))
-                for f in d.get("fields", []) or []:
-                    h.update(str(f.get("name","")).encode("utf-8"))
-                    h.update(str(f.get("value","")).encode("utf-8"))
-                    h.update(b"1" if f.get("inline") else b"0")
-            return h.hexdigest()
-        async def send(self, obj, orig_send, *a, **k):
-            ch_id = getattr(obj, "id", None) or getattr(getattr(obj, "channel", None), "id", None)
-            content = k.get("content")
-            embeds = k.get("embeds") or ([k["embed"]] if "embed" in k else [])
-            key = (ch_id, self._hash(content, embeds))
-            now = _t_v7.time()
-            # purge old
-            for kk, (ts, _) in list(self.cache.items()):
-                if now - ts > 120: self.cache.pop(kk, None)
-            if key in self.cache and now - self.cache[key][0] < 120:
-                try:
-                    msg_id = self.cache[key][1]
-                    ch = obj if hasattr(obj, "fetch_message") else getattr(obj, "channel", None)
-                    if ch and hasattr(ch, "fetch_message"):
-                        return await ch.fetch_message(msg_id)
-                except Exception:
-                    pass
-            msg = await orig_send(*a, **k)
-            try: self.cache[key] = (now, msg.id)
-            except Exception: pass
-            return msg
-    __send_dedupe_v7 = __SimpleDedupeV7()
-
-# 2) Compact mobile timer embeds: two-line per boss + Missing: N; keep all baseline logic intact.
-try:
-    import discord as _dm
-    import aiosqlite as _asq
-    import asyncio as _aio
-    from typing import List as _List, Dict as _Dict
-except Exception:
-    _dm = None
-
-async def _build_timer_embeds_compact(guild, categories):
-    if _dm is None or not categories:
-        # fallback to baseline builder if exists
-        if 'build_timer_embeds_for_categories' in globals():
-            return await build_timer_embeds_for_categories(guild, categories)  # type: ignore
-        return []
-    gid = guild.id
-    show_eta = await get_show_eta(gid) if 'get_show_eta' in globals() else 0
-    # Fetch timers
-    q = ",".join("?" for _ in categories)
-    async with _asq.connect(DB_PATH) as db:  # type: ignore
-        cur = await db.execute(
-            f"SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=? AND category IN ({q})",
-            (gid, *[norm_cat(c) if 'norm_cat' in globals() else c for c in categories])
-        )
-        rows = await cur.fetchall()
-    now = now_ts() if 'now_ts' in globals() else int(__import__('time').time())
-    grouped: _Dict[str, list] = {c: [] for c in categories}
-    for name, ts, cat, sk, win in rows:
-        nc = (norm_cat(cat) if 'norm_cat' in globals() else cat)
-        if nc in grouped:
-            grouped[nc].append((sk or "", name, int(ts or 0), int(win or 0)))
-    # Sort
-    def _nat(s): 
-        try: return natural_key(s)  # type: ignore
-        except Exception: return s
-    for cat in grouped:
-        grouped[cat].sort(key=lambda x: (_nat(x[0]), _nat(x[1])))
-    # Build embeds
-    embeds = []
-    for cat in categories:
-        items = grouped.get(cat, [])
-        normal = []; nada = []
-        for sk, nm, tts, win in items:
-            delta = tts - now
-            t = fmt_delta_for_list(delta) if 'fmt_delta_for_list' in globals() else (f"{max(delta//60,0)}m" if delta>0 else "-Nada")
-            (nada if t == "-Nada" else normal).append((sk, nm, t, tts, win))
-        lines = []
-        DIV = "\n·\n"  # subtle divider for readability
-        for _, nm, t, ts, win_m in normal:
-            stat = window_label(now, ts, win_m) if 'window_label' in globals() else f"{win_m}m"
-            blk = [f"**{nm}**", f"`Spawn:` {t}", f"*window (pending):* `{stat}`"]
-            # optional ETA
-            if show_eta and (ts - now) > 0:
-                try:
-                    from datetime import datetime, timezone
-                    blk.append(f"> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*")
-                except Exception:
-                    pass
-            lines.append("\n".join(blk))
-        desc = (DIV.join(lines) if lines else "No timers.")
-        if nada:
-            desc += f"\n*Missing:* `{len(nada)}`"
-        try:
-            color = await get_category_color(gid, cat)  # type: ignore
-        except Exception:
-            color = _dm.Colour.dark_grey()
-        title = f"{category_emoji(cat)} {cat}" if 'category_emoji' in globals() else cat
-        em = _dm.Embed(title=title, description=desc[:4096], colour=color)
-        embeds.append(em)
-    return embeds
-
-# Bind compact builder while preserving a reference to baseline
-try:
-    __orig_builder_mobile = build_timer_embeds_for_categories  # type: ignore
-    async def build_timer_embeds_for_categories(guild, categories):  # type: ignore
-        try:
-            return await _build_timer_embeds_compact(guild, categories)
-        except Exception as e:
-            if 'log' in globals(): log.warning(f"[mobile] compact builder failed, falling back: {e}")
-            return await __orig_builder_mobile(guild, categories)
-    if 'log' in globals(): log.info("[mobile] compact timer embed builder bound")
-except Exception:
-    pass
-
-# 3) TimerToggleView layout + remembered selection defaults
-try:
-    import discord as _d_ui
-    _orig_add_item = _d_ui.ui.View.add_item
-    def _is_timer_view(v): return type(v).__name__ == "TimerToggleView"
-    def _row_max(v):
-        rows = [getattr(c, "row", 0) if getattr(c, "row", None) is not None else 0 for c in getattr(v, "children", [])]
-        return max(rows) if rows else -1
-    def _count_btns(v, r): 
-        import discord as _d
-        return sum(1 for c in v.children if getattr(c, "row", 0)==r and isinstance(c, _d.ui.Button))
-    def __add_item_guard(self, item):
-        import discord as _d
-        if _is_timer_view(self):
-            # Preselect options based on self.shown if available
-            if isinstance(item, _d.ui.Select):
-                try:
-                    shown = set(getattr(self, "shown", []) or [])
-                    for opt in getattr(item, "options", []) or []:
-                        try:
-                            opt.default = (opt.value in shown)
-                        except Exception: 
-                            pass
-                except Exception:
-                    pass
-                # Ensure select goes to a fresh row
-                item.row = _row_max(self) + 1
-            elif isinstance(item, _d.ui.Button):
-                # Pack buttons after last select row, max 5 per row
-                sel_rows = [getattr(c, "row", 0) if getattr(c, "row", None) is not None else 0 
-                            for c in self.children if isinstance(c, _d.ui.Select)]
-                row = (max(sel_rows)+1) if sel_rows else 0
-                while _count_btns(self, row) >= 5: row += 1
-                item.row = row
-        return _orig_add_item(self, item)
-    _d_ui.ui.View.add_item = __add_item_guard
-    if 'log' in globals(): log.info("[mobile] TimerToggleView layout + defaults guard active")
-except Exception:
-    pass
-
-# 4) Panel edit dedupe + throttle to reduce 429s and duplicates
-try:
-    import asyncio as _aio2, time as _t2
-    _panel_refresh_next
-except NameError:
-    _panel_refresh_next = {}
-try:
-    _panel_refresh_locks
-except NameError:
-    _panel_refresh_locks = {}
-
-if 'refresh_subscription_messages' in globals():
-    _orig_refresh_panels = refresh_subscription_messages  # type: ignore
-    async def refresh_subscription_messages(guild):  # type: ignore
-        gid = guild.id
-        lock = _panel_refresh_locks.setdefault(gid, _aio2.Lock())
-        async with lock:
-            now_t = _t2.time()
-            nxt = _panel_refresh_next.get(gid, 0)
-            if now_t < nxt:
-                return
-            _panel_refresh_next[gid] = now_t + 60
-        return await _orig_refresh_panels(guild)
-    if 'log' in globals(): log.info("[mobile] subscription refresh throttled (60s)")
-
-# Also skip identical panel edits inside the function if it exists in this build
-try:
-    import inspect as _ins
-    src = _ins.getsource(refresh_subscription_messages)  # type: ignore
-    if ".edit(" in src and "cur !=" not in src:
-        # We cannot safely monkey-patch inside; instead wrap message.edit via proxy
-        import discord as _dd
-        _orig_edit = _dd.Message.edit
-        async def __edit_skip_identical(self, *a, **k):
-            try:
-                new_content = k.get("content", a[0] if a else None)
-            except Exception:
-                new_content = None
-            new_embed = k.get("embed")
-            if not new_embed and "embeds" in k and k["embeds"]:
-                new_embed = k["embeds"][0]
-            try:
-                cur = (self.content or "", self.embeds[0].to_dict() if self.embeds else {})
-            except Exception:
-                cur = ("", {})
-            new = (new_content or "", new_embed.to_dict() if new_embed else {})
-            if cur == new:
-                if 'log' in globals(): log.info("[panels] skipped identical edit")
-                return self
-            return await _orig_edit(self, *a, **k)
-        _dd.Message.edit = __edit_skip_identical
-        if 'log' in globals(): log.info("[mobile] message.edit dedupe active")
-except Exception:
-    pass
-
-# 5) DB schema guard to prevent 'no such column/table' errors
-async def _ensure_schema_guard():
-    import aiosqlite, traceback
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:  # type: ignore
-            # guild_config.prefix
-            try:
-                cur = await db.execute("PRAGMA table_info(guild_config)")
-                cols = [r[1] for r in await cur.fetchall()]
-                if "prefix" not in cols:
-                    await db.execute("ALTER TABLE guild_config ADD COLUMN prefix TEXT DEFAULT '!'")
-            except Exception: pass
-            # subscriptions.sub_channel_id (and fallback tables)
-            for tbl in ("subscriptions","subscription_panels","sub_panels"):
-                try:
-                    cur = await db.execute(f"PRAGMA table_info({tbl})")
-                    cols = [r[1] for r in await cur.fetchall()]
-                    if cols and "sub_channel_id" not in cols:
-                        await db.execute(f"ALTER TABLE {tbl} ADD COLUMN sub_channel_id INTEGER DEFAULT NULL")
-                except Exception:
-                    pass
-            # blacklist table
-            await db.execute("CREATE TABLE IF NOT EXISTS blacklist (guild_id INTEGER, user_id INTEGER, PRIMARY KEY (guild_id, user_id))")
-            await db.commit()
-    except Exception as e:
-        if 'log' in globals():
-            log.warning(f"[schema] guard failed: {e}")
-
-# run guard once on ready
-try:
-    _schema_ran
-except NameError:
-    _schema_ran = False
-
-if 'bot' in globals():
-    @bot.listen('on_ready')
-    async def __schema_guard_on_ready():
-        global _schema_ran
-        if _schema_ran: return
-        await _ensure_schema_guard()
-        _schema_ran = True
-        if 'log' in globals(): log.info("[schema] guard applied")
-# =================== END PATCH ===================
