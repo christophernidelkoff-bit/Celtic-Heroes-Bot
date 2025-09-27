@@ -12,58 +12,6 @@
 
 from __future__ import annotations
 
-# ===================== EXTRA V7 SHIMS (time + serializer) =====================
-# Some legacy wrappers expect module-level singletons with name-mangled aliases.
-try:
-    __time_v7
-except NameError:
-    class __TimeV7Shim:
-        @staticmethod
-        def time():
-            import time
-            return time.time()
-    __time_v7 = __TimeV7Shim()
-try:
-    _SendDedupeV7__time_v7
-except NameError:
-    _SendDedupeV7__time_v7 = __time_v7  # alias
-
-try:
-    __ser_em_v7
-except NameError:
-    import hashlib as _h
-    class __SerEmV7Shim:
-        def __init__(self): pass
-        def _norm(self, embeds):
-            out = []
-            for em in embeds or []:
-                try:
-                    out.append(em.to_dict())
-                except Exception:
-                    out.append({})
-            return out
-        def digest(self, embeds):
-            h = _h.sha1()
-            for d in self._norm(embeds):
-                for k in ("title","description","color"):
-                    h.update(str(d.get(k, "")).encode("utf-8"))
-                for f in d.get("fields", []) or []:
-                    h.update(str(f.get("name","")).encode("utf-8"))
-                    h.update(str(f.get("value","")).encode("utf-8"))
-                    h.update(b"1" if f.get("inline") else b"0")
-            return h.hexdigest()
-        # Be permissive: whatever attribute is accessed, return a callable that digests.
-        def __getattr__(self, name):
-            def _fn(embeds):
-                return self.digest(embeds)
-            return _fn
-    __ser_em_v7 = __SerEmV7Shim()
-try:
-    _SendDedupeV7__ser_em_v7
-except NameError:
-    _SendDedupeV7__ser_em_v7 = __ser_em_v7  # alias
-# =================== END EXTRA V7 SHIMS ===================
-
 # ==================== EARLY SCHEMA BOOTSTRAP (sync; placed after future imports) ====================
 # Ensures required tables/columns exist *before* any background tasks run.
 try:
