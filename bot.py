@@ -3391,25 +3391,36 @@ class AltModal(discord.ui.Modal, title="Add Alt (optional)"):
         self.parent_view = parent_view
 
     async def on_submit(self, interaction: discord.Interaction):
-        name = str(self.alt_name).strip()
+        # Read values from TextInput.value
+        name = (getattr(self.alt_name, "value", "") or "").strip()
+        raw = (getattr(self.alt_level, "value", "") or "").strip()
+
+        # Coerce level to int 1–250
         lvl = None
-        if str(self.alt_level).strip():
+        if raw:
             try:
-                lvl = int(__re.sub(r"[^0-9]", "", str(self.alt_level)))
+                lvl = int(__re.sub(r"[^0-9]", "", raw))
             except Exception:
                 lvl = None
-        cls = self.parent_view.selected_alt_class or "Ranger"
-        # If user provided nothing, just re-render current view
-        if not name and not lvl and not cls:
-            return await interaction.response.send_message(self.parent_view._summary_text(), ephemeral=True, view=self.parent_view)
-        alt = {"name": name[:32] if name else "N/A", "level": (lvl if (isinstance(lvl, int) and 1 <= lvl <= 250) else "N/A"), "class": cls}
-        # Append to alts in payload
-        mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
+
+        if not name or not isinstance(lvl, int) or not (1 <= lvl <= 250):
+            return await interaction.response.send_message(
+                "Alt name and level 1–250 are required.",
+                ephemeral=True
+            )
+
+        cls = getattr(self.parent_view, "selected_alt_class", None) or "Ranger"
+
+        # Append to current payload
+        try:
+            mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
+        except Exception:
+            return await interaction.response.send_message("Alt flow unavailable.", ephemeral=True)
+
+        alt = {"name": name[:32], "level": int(lvl), "class": cls}
         new_alts = list(alts or []) + [alt]
         new_view = RosterConfirmView(mname, mlvl, mcls, new_alts, tz_raw, tz_norm)
         await interaction.response.send_message(new_view._summary_text(), ephemeral=True, view=new_view)
-
-# Override RosterConfirmView to include optional alt intake
 class RosterConfirmView(discord.ui.View):
     def __init__(self, main_name: str, lvl: int, cls: str, alts: list, tz_raw: str, tz_norm: str):
         super().__init__(timeout=900)
