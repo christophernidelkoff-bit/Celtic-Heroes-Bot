@@ -1679,13 +1679,6 @@ async def timers_cmd(ctx):
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            line1 = f"ã€” **{nm}** â€¢ Spawn: `{t}` â€¢ Window: `{win_status}` ã€•"
-            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
-            blocks.append(line1 + (eta_line if eta_line else ""))
-        if nada_list:
-            blocks.append("*Lost (-Nada):*")
-        for sk, nm, t, ts, win_m in normal:
-            win_status = window_label(now, ts, win_m)
             try:
                 _ws = str(win_status)
             except Exception:
@@ -1694,8 +1687,16 @@ async def timers_cmd(ctx):
                 _ws = _ws[:64]
             _win_seg = (f" â€¢ Window: `{_ws}`" if _ws and "open" in _ws.lower() else "")
             line1 = f"ã€” **{nm}** â€¢ Spawn: `{t}`{_win_seg} ã€•"
+            from datetime import datetime, timezone
             eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
+        if nada_list:
+            blocks.append("*Lost (-Nada):*")
+            for sk, nm, t, ts, win_m in nada_list:
+                blocks.append(f"â€¢ **{nm}** â€” `{t}`")
+        description = "\n\n".join(blocks) if blocks else "No timers."
+        em = discord.Embed(
+            title=f"{category_emoji(cat)} {cat}",
             description=description,
             color=await get_category_color(gid, cat)
         )
