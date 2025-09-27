@@ -3391,36 +3391,25 @@ class AltModal(discord.ui.Modal, title="Add Alt (optional)"):
         self.parent_view = parent_view
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Read values from TextInput.value
-        name = (getattr(self.alt_name, "value", "") or "").strip()
-        raw = (getattr(self.alt_level, "value", "") or "").strip()
-
-        # Coerce level to int 1–250
+        name = str(self.alt_name).strip()
         lvl = None
-        if raw:
+        if str(self.alt_level).strip():
             try:
-                lvl = int(__re.sub(r"[^0-9]", "", raw))
+                lvl = int(__re.sub(r"[^0-9]", "", str(self.alt_level)))
             except Exception:
                 lvl = None
-
-        if not name or not isinstance(lvl, int) or not (1 <= lvl <= 250):
-            return await interaction.response.send_message(
-                "Alt name and level 1–250 are required.",
-                ephemeral=True
-            )
-
-        cls = getattr(self.parent_view, "selected_alt_class", None) or "Ranger"
-
-        # Append to current payload
-        try:
-            mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
-        except Exception:
-            return await interaction.response.send_message("Alt flow unavailable.", ephemeral=True)
-
-        alt = {"name": name[:32], "level": int(lvl), "class": cls}
+        cls = self.parent_view.selected_alt_class or "Ranger"
+        # If user provided nothing, just re-render current view
+        if not name and not lvl and not cls:
+            return await interaction.response.send_message(self.parent_view._summary_text(), ephemeral=True, view=self.parent_view)
+        alt = {"name": name[:32] if name else "N/A", "level": (lvl if (isinstance(lvl, int) and 1 <= lvl <= 250) else "N/A"), "class": cls}
+        # Append to alts in payload
+        mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
         new_alts = list(alts or []) + [alt]
         new_view = RosterConfirmView(mname, mlvl, mcls, new_alts, tz_raw, tz_norm)
         await interaction.response.send_message(new_view._summary_text(), ephemeral=True, view=new_view)
+
+# Override RosterConfirmView to include optional alt intake
 class RosterConfirmView(discord.ui.View):
     def __init__(self, main_name: str, lvl: int, cls: str, alts: list, tz_raw: str, tz_norm: str):
         super().__init__(timeout=900)
@@ -4903,6 +4892,105 @@ async def __altv2_bind_log():
         if 'log' in globals(): log.info("[altfix] v2 embed builder bound")
     except Exception: pass
 # ==================== END ALT INTAKE PATCH ====================
+
+# ==================== ALT LEVEL DISPLAY HOTFIX (additive, no removals) ====================
+try:
+    import re as __re_alts, json as __json_alts, discord as __d_alts
+except Exception:
+    pass
+def __alts_coerce_level(v):
+    try:
+        if v is None: return None
+        if isinstance(v, int): return v
+        m = __re_alts.search(r'\d{1,3}', str(v)); n = int(m.group(0)) if m else None
+        if n is None or not (1 <= n <= 250): return None
+        return n
+    except Exception: return None
+def __alts_norm_one(a):
+    if isinstance(a, dict):
+        name = str(a.get("name") or a.get("Name") or a.get("toon") or "?").strip()[:32] or "?"
+        cls  = str(a.get("class") or a.get("Class") or a.get("cls") or "?").strip()[:16] or "?"
+        lvl  = a.get("level"); 
+        if lvl is None:
+            for k in ("lvl","lv","alt_level","Level"):
+                if k in a: lvl = a.get(k); break
+        return {"name": name, "class": cls, "level": __alts_coerce_level(lvl)}
+    if isinstance(a, (list,tuple)) and a:
+        return {"name": str(a[0]).strip()[:32] or "?", "class": (str(a[2]).strip()[:16] if len(a)>2 else "?"), "level": __alts_coerce_level(a[1] if len(a)>1 else None)}
+    parts = [p.strip() for p in str(a).split("•")]
+    return {"name": (parts[0][:32] if parts else "?") or "?", "class": (parts[2][:16] if len(parts)>=3 else "?") or "?", "level": __alts_coerce_level(parts[1] if len(parts)>=2 else None)}
+def __alts_norm_list(alts):
+    try:
+        if isinstance(alts, str):
+            try: alts = __json_alts.loads(alts) or []
+            except Exception: alts = []
+        return [__alts_norm_one(x) for x in (alts or [])]
+    except Exception: return []
+# Patch AltModal.on_submit to read .value and store integer level
+try:
+    AltModal; RosterConfirmView
+    async def __alt_submit_fixed(self, interaction: __d_alts.Interaction):
+        name_txt = (getattr(self.alt_name, "value", "") or "").strip()
+        lvl_txt  = (getattr(self.alt_level, "value", "") or "").strip()
+        lvl = __alts_coerce_level(lvl_txt)
+        if not name_txt or lvl is None:
+            return await interaction.response.send_message("Alt name and a numeric level 1–250 are required.", ephemeral=True)
+        cls = getattr(self.parent_view, "selected_alt_class", None) or "Ranger"
+        mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
+        alt = {"name": name_txt[:32], "level": int(lvl), "class": cls}
+        new_alts = list(alts or []) + [alt]
+        new_view = RosterConfirmView(mname, mlvl, mcls, new_alts, tz_raw, tz_norm)
+        await interaction.response.send_message(new_view._summary_text(), ephemeral=True, view=new_view)
+    AltModal.on_submit = __alt_submit_fixed
+except Exception: pass
+# Wrap roster embed so levels always display
+try:
+    __orig_build_embed = _build_roster_embed
+except Exception:
+    __orig_build_embed = None
+def _build_roster_embed(member, main_name, main_level, main_class, alts, tz_raw, tz_norm):
+    norm = __alts_norm_list(alts)
+    if __orig_build_embed:
+        try: return __orig_build_embed(member, main_name, main_level, main_class, norm, tz_raw, tz_norm)
+        except Exception: pass
+    e = __d_alts.Embed(title=f"New Member: {getattr(member,'display_name','?')}", color=__d_alts.Color.blurple())
+    e.add_field(name="Main", value=f"**✨ {main_name} • Lv {__alts_coerce_level(main_level) or main_level} • {main_class} ✨**", inline=False)
+    alt_lines = [f"{i}. {a['name']} • {'Lv '+str(a['level']) if isinstance(a['level'],int) else 'Lv N/A'} • {a['class']}" for i,a in enumerate(norm,1)] or ["N/A"]
+    e.add_field(name="Alts", value="\n".join(alt_lines), inline=False)
+    tz = f"{tz_raw}" + (f" ({tz_norm})" if tz_norm else "")
+    e.add_field(name="Timezone", value=tz or "N/A", inline=False)
+    e.set_footer(text="Welcome!")
+    return e
+# Normalize before posting in the join flow
+try:
+    _orig_join = RosterConfirmView.join_server
+    async def _join_server_norm(self, interaction: __d_alts.Interaction, button: __d_alts.ui.Button):
+        try: await _upsert_roster(interaction.guild.id, interaction.user.id, *self.payload)
+        except Exception: pass
+        try: await _orig_join(self, interaction, button)
+        except TypeError: await _orig_join(self, interaction)
+        except Exception:
+            g = interaction.guild; u = interaction.user
+            rcid = await get_roster_channel_id(g.id)
+            ch = g.get_channel(rcid) if rcid else None
+            if ch and can_send(ch):
+                mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
+                await ch.send(embed=_build_roster_embed(u, mname, mlvl, mcls, __alts_norm_list(alts), tz_raw, tz_norm))
+            try: await interaction.response.edit_message(content="You're set. Welcome.", view=None)
+            except Exception: pass
+    RosterConfirmView.join_server = _join_server_norm
+except Exception: pass
+# Re-bind on ready
+try:
+    @bot.listen("on_ready")
+    async def __alts_ready_bind():
+        try:
+            globals()["_build_roster_embed"] = _build_roster_embed
+            if 'log' in globals(): log.info("[alt-level-fix] builder active")
+        except Exception: pass
+except Exception: pass
+# ==================== END ALT LEVEL DISPLAY HOTFIX ====================
+
 
 
 
