@@ -1545,7 +1545,12 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            line1 = f"ã€” **{nm}** • Spawn: `{t}` • " + _hide_if_pending(win_status, prefix=" • Window: `{win_status}` ã€•"
+            try:
+                _ws = str(win_status)
+            except Exception:
+                _ws = ""
+            _win_seg = (f" • Window: `{_ws}`" if _ws and "pending" not in _ws.lower() else "")
+            line1 = f"ã€” **{nm}** • Spawn: `{t}`{_win_seg} ã€•"
             eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
