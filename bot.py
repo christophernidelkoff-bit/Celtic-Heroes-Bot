@@ -15,6 +15,18 @@ from __future__ import annotations
 EMJ_HOURGLASS = "⏳"
 EMJ_CLOCK = "🕓"
 
+
+# --- timers UI helper: hide window segment when pending ---
+def _hide_if_pending(win_label: str, prefix: str = " · ") -> str:
+    try:
+        lab = str(win_label)
+    except Exception:
+        return ""
+    if "pending" in lab.lower():
+        return ""
+    if len(lab) > 64:
+        lab = lab[:64]
+    return f"{prefix}{lab}"
 async def send_text_safe(ch, content: str):
     """Error-checked send for text content."""
     if not content:
@@ -1533,7 +1545,7 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            line1 = f"ã€” **{nm}** • Spawn: `{t}` • Window: `{win_status}` ã€•"
+            line1 = f"ã€” **{nm}** • Spawn: `{t}` • " + _hide_if_pending(win_status, prefix=" • Window: `{win_status}` ã€•"
             eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
