@@ -5183,6 +5183,143 @@ except Exception:
     pass
 # ==================== END MOBILE TIMER UX ====================
 
+# ==================== MOBILE TIMER UX — persist-only defaults + compact list (additive) ====================
+# Baseline preserved. Adds:
+# 1) Multi-select that preselects ONLY previously toggled categories.
+# 2) Selection saves immediately and refreshes view.
+# 3) Compact one-line timer embeds for mobile.
+try:
+    import discord as _dm
+    from typing import List as _List
+except Exception:
+    _dm = None
+
+# Add select without removing existing controls
+if _dm is not None and 'TimerToggleView' in globals():
+    class _MobileCategorySelect(_dm.ui.Select):
+        def __init__(self, parent_view):
+            self._parent = parent_view
+            opts = []
+            base = globals().get('CATEGORY_ORDER', [])
+            emo = globals().get('EMOJI_FOR_CAT', {})
+            for cat in base:
+                opts.append(_dm.SelectOption(
+                    label=cat,
+                    value=cat,
+                    emoji=(emo.get(cat) if isinstance(emo, dict) else None),
+                    default=(cat in parent_view.shown)
+                ))
+            super().__init__(
+                placeholder="Select categories to show",
+                min_values=0,
+                max_values=len(opts) or 1,
+                options=opts,
+                row=0,
+            )
+        async def callback(self, interaction: _dm.Interaction):
+            sel = list(self.values)
+            # Keep ordering consistent with CATEGORY_ORDER
+            base = globals().get('CATEGORY_ORDER', [])
+            self._parent.shown = [c for c in base if c in sel]
+            try:
+                await set_user_shown_categories(interaction.guild.id, interaction.user.id, self._parent.shown)
+            except Exception as e:
+                if 'log' in globals():
+                    log.warning(f"[mobile] persist selection failed: {e}")
+            await self._parent.refresh(interaction)
+
+    try:
+        _orig_init = TimerToggleView.__init__  # type: ignore
+        def __patched_init(self, guild: _dm.Guild, user_id: int, init_show: _List[str]):
+            # Call original to keep buttons and behavior
+            _orig_init(self, guild, user_id, init_show)
+            # Enforce "only previously toggled" default. If none saved, start empty.
+            if not (init_show or []):
+                self.shown = []
+            # Inject compact select
+            try:
+                self.add_item(_MobileCategorySelect(self))
+            except Exception as e:
+                if 'log' in globals():
+                    log.warning(f"[mobile] add select failed: {e}")
+        TimerToggleView.__init__ = __patched_init  # type: ignore
+        if 'log' in globals(): log.info("[mobile] TimerToggleView patched with persisted-only defaults and select")
+    except Exception as e:
+        try:
+            if 'log' in globals(): log.warning(f"[mobile] patch bind failed: {e}")
+        except Exception:
+            pass
+
+# Compact timer embed builder. Fallback to original on failure.
+try:
+    __orig_timer_builder = build_timer_embeds_for_categories  # type: ignore
+except Exception:
+    __orig_timer_builder = None
+
+async def _build_timer_embeds_compact(guild, categories):
+    try:
+        import aiosqlite as _asq
+        gid = guild.id
+        show_eta = await get_show_eta(gid) if 'get_show_eta' in globals() else 0
+        if not categories:
+            return []
+        q = ",".join("?" for _ in categories)
+        async with _asq.connect(DB_PATH) as db:
+            c = await db.execute(
+                f"SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=? AND category IN ({q})",
+                (gid, *[norm_cat(c) for c in categories])
+            )
+            rows = await c.fetchall()
+        now = now_ts()
+        grouped = {k: [] for k in categories}
+        for name, ts, cat, sk, win in rows:
+            nc = norm_cat(cat)
+            if nc in grouped:
+                grouped[nc].append((sk or "", name, int(ts), int(win)))
+        for cat in grouped:
+            grouped[cat].sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
+        embeds = []
+        for cat in categories:
+            items = grouped.get(cat, [])
+            lines = []
+            nada = []
+            for sk, nm, tts, win in items:
+                delta = tts - now
+                t = fmt_delta_for_list(delta)
+                if t == "-Nada":
+                    nada.append(f"· **{nm}** — `{t}`")
+                    continue
+                stat = window_label(now, tts, win)
+                seg = f"• **{nm}** — `{t}` · {stat}"
+                if show_eta and delta > 0:
+                    from datetime import datetime, timezone
+                    seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
+                lines.append(seg)
+            if nada:
+                lines.append("*Lost (-Nada)*")
+                lines.extend(nada)
+            em = _dm.Embed(
+                title=f"{category_emoji(cat)} {cat}",
+                description=("\n".join(lines) if lines else "No timers.")[:4096],
+                color=await get_category_color(gid, cat)
+            )
+            embeds.append(em)
+        return embeds[:10]
+    except Exception as e:
+        if 'log' in globals():
+            log.warning(f"[mobile] compact builder failed, falling back: {e}")
+        if __orig_timer_builder:
+            return await __orig_timer_builder(guild, categories)
+        return []
+
+try:
+    build_timer_embeds_for_categories = _build_timer_embeds_compact  # type: ignore
+    if 'log' in globals(): log.info("[mobile] compact embed builder bound")
+except Exception:
+    pass
+# ==================== END MOBILE TIMER UX patch ====================
+
+
 
 
 
