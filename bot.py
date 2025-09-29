@@ -208,7 +208,7 @@ async def safe_edit(message, /, **kwargs):
             return False  # too soon; next tick will try again
 
     try:
-        await safe_edit(message, **kwargs)
+        await message.edit(**kwargs)
         _EDIT_STATE[message.id] = (digest, now)
         return True
     except HTTPException as e:
