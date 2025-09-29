@@ -141,28 +141,82 @@ from datetime import datetime, timezone
 import aiosqlite
 import discord
 from discord.ext import commands, tasks
-# --- Unicode-only emoji helper (Patch B minimal) ---
+from discord import app_commands
+
+# --- Unicode-only emoji + panel text sanitization helpers ---
 def _to_unicode_only(e) -> str:
-    """Return a safe Unicode emoji or '⭐' if invalid or custom.
-    Error checks:
-      1) Non-string input -> '⭐'
-      2) Reject custom emoji markup like <:name:id> or <a:name:id>
-      3) Control chars or too-long sequences -> '⭐'
-    """
     try:
         s = str(e).strip()
     except Exception:
-        return '⭐'
-    # custom emoji markers contain angle brackets
-    if '<' in s or '>' in s:
-        return '⭐'
-    # basic sanitation
+        return "⭐"
+    if "<" in s or ">" in s:  # reject custom <:name:id>
+        return "⭐"
     if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
-        return '⭐'
+        return "⭐"
     return s
-# --- End helper ---
 
-from discord import app_commands
+_MOJIBAKE_SIG = ("Ã", "â", "ðŸ")
+def _fix_mojibake_text(s):
+    if not isinstance(s, str) or not s:
+        return s
+    if any(sig in s for sig in _MOJIBAKE_SIG):
+        try:
+            s2 = s.encode("latin1", "ignore").decode("utf-8", "ignore")
+            if s2:
+                s = s2
+        except Exception:
+            # targeted replacements
+            s = (s.replace("â€™", "’")
+                   .replace("â€œ", "“")
+                   .replace("â€", "”")
+                   .replace("â€“", "–")
+                   .replace("â€”", "—"))
+    return s
+
+def sanitize_panel_embed(embed):
+    """Return an embed with description and fields de-mojibaked.
+    Three checks: skip non-Embed, skip empty, sanitize desc and field names/values.
+    """
+    try:
+        from discord import Embed
+    except Exception:
+        return embed
+    try:
+        if not isinstance(embed, Embed):
+            return embed
+        ed = embed.to_dict()
+        if "description" in ed and ed["description"]:
+            ed["description"] = _fix_mojibake_text(ed["description"])
+        if "title" in ed and ed["title"]:
+            ed["title"] = _fix_mojibake_text(ed["title"])
+        if "fields" in ed and ed["fields"]:
+            for f in ed["fields"]:
+                if "name" in f and f["name"]:
+                    f["name"] = _fix_mojibake_text(f["name"])
+                if "value" in f and f["value"]:
+                    f["value"] = _fix_mojibake_text(f["value"])
+        return Embed.from_dict(ed)
+    except Exception:
+        return embed
+
+async def add_reaction_unicode_only(message, emoji):
+    """Wrapper to enforce Unicode-only reactions.
+    Error checks: validate message methods, coerce emoji, swallow add errors.
+    """
+    import asyncio, logging
+    logger = logging.getLogger("add_reaction_unicode_only")
+    if not hasattr(message, "add_reaction"):
+        logger.warning("add_reaction_unicode_only: invalid message object")
+        return False
+    e = _to_unicode_only(emoji)
+    try:
+        await add_reaction_unicode_only(message, e)
+        await asyncio.sleep(0.2)
+        return True
+    except Exception as err:
+        logger.warning("add_reaction_unicode_only failed: %s", err)
+        return False
+# --- End helpers ---
 
 # -------------------- SAFE EDIT WRAPPER (Patch A: diff + debounce) --------------------
 _EDIT_STATE: dict[int, tuple[str, float]] = {}
@@ -189,6 +243,14 @@ async def safe_edit(message, /, **kwargs):
     # Normalize embed(s)
     embed = kwargs.pop("embed", None)
     embeds = kwargs.get("embeds")
+
+        # Patch: sanitize embeds to fix mojibake on panels
+        el = kwargs.get('embeds')
+        if el:
+            try:
+                kwargs['embeds'] = [sanitize_panel_embed(e) for e in el]
+            except Exception:
+                pass
     if embed is not None and embeds is not None:
         # Prefer 'embeds' if both are supplied
         logger.warning("safe_edit: both 'embed' and 'embeds' provided; using 'embeds'")
@@ -888,30 +950,14 @@ async def refresh_subscription_messages(guild: discord.Guild):
                 log.warning(f"Subscription panel ({cat}) create failed: {e}")
                 continue
         if can_react(channel) and message:
-            # Unicode-only reactions to eliminate Unknown Emoji (10014)
             try:
-                planned = list(emojis)
-            except Exception:
-                planned = []
-            # Error check: guard when message.reactions isn't available
-            try:
-                existing = set(str(r.emoji) for r in getattr(message, 'reactions', []))
-            except Exception:
-                existing = set()
-            resolved = []
-            seen = set(existing)
-            for raw in planned:
-                e = _to_unicode_only(raw)
-                if not e or e in seen:
-                    continue
-                resolved.append(e)
-                seen.add(e)
-            for e in resolved:
-                try:
-                    await message.add_reaction(e)
+                existing = set(str(r.emoji) for r in message.reactions)
+                for e in [e for e in emojis if e not in existing]:
+                    await add_reaction_unicode_only(message, e)
                     await asyncio.sleep(0.2)
-                except Exception as err:
-                    log.warning(f'Adding reactions failed for {cat}: {err}')
+            except Exception as e:
+                log.warning(f"Adding reactions failed for {cat}: {e}")
+
 # -------------------- SUBSCRIPTION PINGS (separate channel supported) --------------------
 async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_name: str, when_left: Optional[int] = None):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -2720,7 +2766,7 @@ async def roles_panel(interaction: discord.Interaction,
         await db.commit()
     for em, _, _ in parsed:
         try:
-            await msg.add_reaction(em)
+            await add_reaction_unicode_only(msg, em)
             await asyncio.sleep(0.2)
         except Exception:
             pass
