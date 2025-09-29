@@ -1744,8 +1744,7 @@ async def timers_cmd(ctx):
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            win_seg = (f" • Window: `{win_status}`" if isinstance(win_status, str) and "pending" not in win_status.lower() else "")
-            line1 = f"ã€” **{nm}** • Spawn: `{t}`{win_seg} ã€•"
+            line1 = f"ã€” **{nm}** • Spawn: `{t}` • Window: `{win_status}` ã€•"
             eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
@@ -5226,7 +5225,12 @@ async def _build_timer_embeds_compact(guild: dm.Guild, categories: _List[str]):
         # compact one-liners: Name — `t` · Window[ · ETA HH:MM]
         for _, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            seg = f"• **{nm}** — `{t}` · {win_status}"
+            try:
+                _ws = str(win_status)
+            except Exception:
+                _ws = ""
+            _inc = (bool(_ws) and ("pending" not in _ws.lower()))
+            seg = f"• **{nm}** — `{t}`" + (f" · {_ws}" if _inc else "")
             if show_eta and (ts - now) > 0:
                 try:
                     from datetime import datetime, timezone
@@ -5363,8 +5367,12 @@ async def _build_timer_embeds_compact(guild, categories):
                     nada.append(f"· **{nm}** — `{t}`")
                     continue
                 stat = window_label(now, tts, win)
-                win_seg = (f" · Window: {stat}" if isinstance(stat, str) and "pending" not in stat.lower() else "")
-                seg = f"• **{nm}** — `{t}`{win_seg}"
+                try:
+                    _ws = str(stat)
+                except Exception:
+                    _ws = ""
+                _inc = (bool(_ws) and ("pending" not in _ws.lower()))
+                seg = f"• **{nm}** — `{t}`" + (f" · {_ws}" if _inc else "")
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
                     seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
