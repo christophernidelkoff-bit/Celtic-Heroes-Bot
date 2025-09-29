@@ -1,82 +1,3 @@
-# --- BEGIN Mojibake sanitization helpers ---
-def _clean_text(s):
-    if not isinstance(s, str):
-        return s
-    out = s
-    if ('Ã' in out) or ('â' in out) or ('ðŸ' in out):
-        try:
-            cand = out.encode('latin1','ignore').decode('utf-8','ignore')
-            if cand:
-                out = cand
-        except Exception:
-            out = (out.replace('â€™','’')
-                     .replace('â€œ','“')
-                     .replace('â€\x9d','”')
-                     .replace('â€“','–')
-                     .replace('â€”','—'))
-    try:
-        if any((ord(ch) < 32 and ch not in ('\n','\t')) for ch in out):
-            out = ''.join(ch for ch in out if (ord(ch) >= 32 or ch in ('\n','\t')))
-    except Exception:
-        pass
-    return out
-def _sanitize_embed(embed):
-    try:
-        from discord import Embed
-    except Exception:
-        return embed
-    try:
-        if not isinstance(embed, Embed):
-            return embed
-        d = embed.to_dict()
-        if d.get('title'):
-            d['title'] = _clean_text(d['title'])
-        if d.get('description'):
-            d['description'] = _clean_text(d['description'])
-        if d.get('fields'):
-            for f in d['fields']:
-                if 'name' in f and f['name']:
-                    f['name'] = _clean_text(f['name'])
-                if 'value' in f and f['value']:
-                    f['value'] = _clean_text(f['value'])
-        return Embed.from_dict(d)
-    except Exception:
-        return embed
-def _sanitize_view(view):
-    try:
-        from discord.ui import Select
-    except Exception:
-        return view
-    try:
-        if not hasattr(view, 'children'):
-            return view
-        for child in list(getattr(view, 'children', [])):
-            if hasattr(child, 'label') and child.label:
-                try:
-                    child.label = _clean_text(child.label)
-                except Exception:
-                    pass
-            if isinstance(child, Select):
-                if hasattr(child, 'placeholder') and child.placeholder:
-                    try:
-                        child.placeholder = _clean_text(child.placeholder)
-                    except Exception:
-                        pass
-                try:
-                    opts = getattr(child, 'options', None)
-                    if opts:
-                        for opt in opts:
-                            if hasattr(opt, 'label') and opt.label:
-                                opt.label = _clean_text(opt.label)
-                            if hasattr(opt, 'description') and opt.description:
-                                opt.description = _clean_text(opt.description)
-                except Exception:
-                    pass
-        return view
-    except Exception:
-        return view
-# --- END Mojibake sanitization helpers ---
-
 # -------------------- Celtic Heroes Boss Tracker — Foundations (Part 1/4) --------------------
 # Features in this part:
 # - Env & logging, intents, globals
@@ -258,23 +179,6 @@ async def safe_edit(message, /, **kwargs):
 
     # Prepare a stable payload for hashing
     payload = {
-
-        # Sanitize outgoing text to remove mojibake and control chars
-        if 'content' in kwargs and kwargs['content'] is not None:
-            try:
-                kwargs['content'] = _clean_text(kwargs['content'])
-            except Exception:
-                pass
-        if 'embeds' in kwargs and kwargs['embeds']:
-            try:
-                kwargs['embeds'] = [_sanitize_embed(e) for e in kwargs['embeds']]
-            except Exception:
-                pass
-        if 'view' in kwargs and kwargs['view'] is not None:
-            try:
-                kwargs['view'] = _sanitize_view(kwargs['view'])
-            except Exception:
-                pass
         "content": kwargs.get("content"),
         "embeds": None,
         "allowed_mentions": kwargs.get("allowed_mentions").to_dict() if kwargs.get("allowed_mentions") else None,
