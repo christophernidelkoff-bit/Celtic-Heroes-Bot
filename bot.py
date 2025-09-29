@@ -1,3 +1,155 @@
+
+# --- Global sanitization helpers and monkeypatch ---
+def _clean_text(s):
+    """
+    Clean string from mojibake and control chars.
+    Error checks: non-string passthrough; latin1→utf8 fallback; control removal.
+    """
+    if not isinstance(s, str):
+        return s
+    out = s
+    if ("Ã" in out) or ("â" in out) or ("ðŸ" in out):
+        try:
+            cand = out.encode("latin1","ignore").decode("utf-8","ignore")
+            if cand:
+                out = cand
+        except Exception:
+            out = (out.replace("â€™","’")
+                     .replace("â€œ","“")
+                     .replace("â€\x9d","”")
+                     .replace("â€“","–")
+                     .replace("â€”","—"))
+    try:
+        if any((ord(ch) < 32 and ch not in ("\n","\t")) for ch in out):
+            out = "".join(ch for ch in out if (ord(ch) >= 32 or ch in ("\n","\t")))
+    except Exception:
+        pass
+    return out
+
+def _sanitize_embed(embed):
+    try:
+        from discord import Embed
+    except Exception:
+        return embed
+    try:
+        if not isinstance(embed, Embed):
+            return embed
+        d = embed.to_dict()
+        if d.get("title"): d["title"] = _clean_text(d["title"])
+        if d.get("description"): d["description"] = _clean_text(d["description"])
+        if d.get("fields"):
+            for f in d["fields"]:
+                if "name" in f and f["name"]: f["name"] = _clean_text(f["name"])
+                if "value" in f and f["value"]: f["value"] = _clean_text(f["value"])
+        return Embed.from_dict(d)
+    except Exception:
+        return embed
+
+def _sanitize_view(view):
+    try:
+        from discord.ui import Select
+    except Exception:
+        return view
+    try:
+        if not hasattr(view, "children"):
+            return view
+        for child in list(getattr(view, "children", [])):
+            if hasattr(child, "label") and child.label:
+                try: child.label = _clean_text(child.label)
+                except Exception: pass
+            if isinstance(child, Select):
+                if hasattr(child, "placeholder") and child.placeholder:
+                    try: child.placeholder = _clean_text(child.placeholder)
+                    except Exception: pass
+                try:
+                    opts = getattr(child, "options", None)
+                    if opts:
+                        for opt in opts:
+                            if hasattr(opt, "label") and opt.label:
+                                opt.label = _clean_text(opt.label)
+                            if hasattr(opt, "description") and opt.description:
+                                opt.description = _clean_text(opt.description)
+                except Exception:
+                    pass
+        return view
+    except Exception:
+        return view
+
+def _fix_emoji(e):
+    "Return safe Unicode emoji; reject custom markup and mojibake."
+    try:
+        s = str(e).strip()
+    except Exception:
+        return "⭐"
+    if "<" in s or ">" in s:  # custom <:name:id>
+        return "⭐"
+    if ("Ã" in s) or ("â" in s) or ("ðŸ" in s):
+        try:
+            s2 = s.encode("latin1","ignore").decode("utf-8","ignore")
+            if s2:
+                s = s2
+        except Exception:
+            return "⭐"
+    if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
+        return "⭐"
+    return s
+
+_SEND_PATCHED = False
+def _install_sanitizers():
+    "Monkeypatch discord send/edit to sanitize kwargs. Idempotent."
+    global _SEND_PATCHED
+    if _SEND_PATCHED:
+        return
+    try:
+        import discord
+        from discord.abc import Messageable
+        from discord import Message
+    except Exception:
+        return
+    try:
+        async def _sanitized_send(self, *args, **kwargs):
+            # Error check 1: sanitize content
+            c = kwargs.get("content", None)
+            if c is not None:
+                kwargs["content"] = _clean_text(c)
+            # Error check 2: sanitize embeds/embed
+            if "embed" in kwargs and kwargs["embed"] is not None:
+                kwargs["embed"] = _sanitize_embed(kwargs["embed"])
+            if "embeds" in kwargs and kwargs["embeds"]:
+                try:
+                    kwargs["embeds"] = [_sanitize_embed(e) for e in kwargs["embeds"]]
+                except Exception:
+                    pass
+            # Error check 3: sanitize view labels
+            if "view" in kwargs and kwargs["view"] is not None:
+                kwargs["view"] = _sanitize_view(kwargs["view"])
+            return await _orig_send(self, *args, **kwargs)
+
+        async def _sanitized_edit(self, *args, **kwargs):
+            c = kwargs.get("content", None)
+            if c is not None:
+                kwargs["content"] = _clean_text(c)
+            if "embed" in kwargs and kwargs["embed"] is not None:
+                kwargs["embed"] = _sanitize_embed(kwargs["embed"])
+            if "embeds" in kwargs and kwargs["embeds"]:
+                try:
+                    kwargs["embeds"] = [_sanitize_embed(e) for e in kwargs["embeds"]]
+                except Exception:
+                    pass
+            if "view" in kwargs and kwargs["view"] is not None:
+                kwargs["view"] = _sanitize_view(kwargs["view"])
+            return await _orig_edit(self, *args, **kwargs)
+
+        # Bind originals then patch
+        _orig_send = Messageable.send
+        _orig_edit = Message.edit
+        Messageable.send = _sanitized_send
+        Message.edit = _sanitized_edit
+        _SEND_PATCHED = True
+    except Exception:
+        pass
+# --- End global sanitization ---
+
 # -------------------- Celtic Heroes Boss Tracker — Foundations (Part 1/4) --------------------
 # Features in this part:
 # - Env & logging, intents, globals
@@ -142,84 +294,6 @@ import aiosqlite
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-
-# -------------------- SAFE EDIT WRAPPER (Patch A: diff + debounce) --------------------
-_EDIT_STATE: dict[int, tuple[str, float]] = {}
-_EDIT_MIN_INTERVAL_SEC = 10.0  # per-message debounce window
-
-async def safe_edit(message, /, **kwargs):
-    """Edit a message only if payload changed and not too soon.
-    Returns True if an edit was sent, False otherwise.
-    Extra checks:
-      1) Normalize 'embed'/'embeds' to a list.
-      2) Skip if computed payload hash unchanged.
-      3) Per-message debounce to reduce 429 rate limits.
-    """
-    import asyncio, logging, time, json, hashlib
-    from discord import HTTPException
-
-    logger = logging.getLogger("safe_edit")
-
-    # Error check 1: message must have .id and .edit
-    if not hasattr(message, "id") or not hasattr(message, "edit"):
-        logger.warning("safe_edit: invalid message object; skipping")
-        return False
-
-    # Normalize embed(s)
-    embed = kwargs.pop("embed", None)
-    embeds = kwargs.get("embeds")
-    if embed is not None and embeds is not None:
-        # Prefer 'embeds' if both are supplied
-        logger.warning("safe_edit: both 'embed' and 'embeds' provided; using 'embeds'")
-    elif embed is not None:
-        kwargs["embeds"] = [embed]
-    elif embeds is None:
-        # no embeds provided
-        pass
-
-    # Prepare a stable payload for hashing
-    payload = {
-        "content": kwargs.get("content"),
-        "embeds": None,
-        "allowed_mentions": kwargs.get("allowed_mentions").to_dict() if kwargs.get("allowed_mentions") else None,
-    }
-    e_list = kwargs.get("embeds")
-    if e_list:
-        try:
-            payload["embeds"] = [e.to_dict() if hasattr(e, "to_dict") else None for e in e_list]
-        except Exception:
-            payload["embeds"] = None
-
-    try:
-        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    except Exception:
-        blob = str(payload)
-    digest = hashlib.sha256(blob.encode("utf-8", "ignore")).hexdigest()
-
-    last = _EDIT_STATE.get(message.id)
-    now = asyncio.get_event_loop().time()
-
-    # Error check 2: debounce
-    if last is not None:
-        last_hash, last_ts = last
-        if digest == last_hash:
-            return False  # unchanged
-        if now - last_ts < _EDIT_MIN_INTERVAL_SEC:
-            return False  # too soon; next tick will try again
-
-    try:
-        await safe_edit(message, **kwargs)
-        _EDIT_STATE[message.id] = (digest, now)
-        return True
-    except HTTPException as e:
-        # Error check 3: swallow 429, log, and do not retry immediately
-        if getattr(e, "status", None) == 429:
-            logger.warning("safe_edit: 429 rate limited on message %s", message.id)
-            _EDIT_STATE[message.id] = (digest, now)  # record attempt to space out
-            return False
-        # Other HTTP errors bubble up for visibility
-        raise
-# ------------------ END SAFE EDIT WRAPPER ------------------
 from dotenv import load_dotenv
 
 # -------------------- ENV / GLOBALS --------------------
@@ -783,11 +857,11 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     lines = []
     per_message_emojis = []
     for bid, name, _sk in rows:
-        e = emoji_map.get(bid, "â­")
+        e = _fix_emoji(emoji_map.get(bid, "⭐"))
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
-        lines.append(f"{e} — **{name}**")
+        lines.append(f"{_fix_emoji(e)} — **{_clean_text(name)}**")
     bucket = ""; fields: List[str] = []
     for line in lines:
         if len(bucket) + len(line) + 1 > 1000:
@@ -851,7 +925,7 @@ async def refresh_subscription_messages(guild: discord.Guild):
         if existing_id:
             try:
                 message = await channel.fetch_message(existing_id)
-                await safe_edit(message, content=content, embed=embed)
+                await message.edit(content=content, embed=embed)
             except Exception:
                 try:
                     message = await channel.send(content=content, embed=embed)
@@ -3008,7 +3082,7 @@ async def _update_market_message_embed(guild: discord.Guild, listing_row: tuple)
         recent_offers=recent
     )
     try:
-        await safe_edit(msg, embed=em)
+        await msg.edit(embed=em)
     except Exception:
         pass
 
@@ -3171,7 +3245,7 @@ async def market_post(inter: discord.Interaction, item: str, trades: bool, offer
     # attach view
     view = ListingView(listing_id=listing_id, section=LM_SEC_MARKET, author_id=inter.user.id, taking_offers=offers, thread_id=thread_id)
     try:
-        await safe_edit(msg, view=view)
+        await msg.edit(view=view)
     except Exception:
         pass
 
@@ -3320,7 +3394,7 @@ async def lix_post(inter: discord.Interaction, name: str, class_: str, level: st
     # attach view (close only)
     view = ListingView(listing_id=listing_id, section=LM_SEC_LIX, author_id=inter.user.id, taking_offers=False, thread_id=None)
     try:
-        await safe_edit(msg, view=view)
+        await msg.edit(view=view)
     except Exception:
         pass
 
@@ -3684,7 +3758,7 @@ async def ensure_welcome_prompt(guild: discord.Guild):
         try:
             msg = await ch.fetch_message(msg_id)
             try:
-                await safe_edit(msg, content=content, view=view)
+                await msg.edit(content=content, view=view)
                 return
             except Exception:
                 pass
@@ -4546,7 +4620,7 @@ async def _roster_edit_or_post(guild: discord.Guild, member: discord.Member, row
     if roster_msg_id:
         try:
             msg = await ch.fetch_message(int(roster_msg_id))
-            await safe_edit(msg, embed=e)
+            await msg.edit(embed=e)
             return msg
         except Exception:
             pass
@@ -5536,12 +5610,7 @@ async def _build_timer_embeds_count_missing_only(guild: dm.Guild, categories: Li
                     missing_count += 1
                     continue
                 win_status = window_label(now, tts, win)
-                try:
-                    _ws = str(win_status)
-                except Exception:
-                    _ws = ""
-                _inc = (bool(_ws) and ("pending" not in _ws.lower()))
-                seg = (f"• **{nm}** `{t}`" + (f" · {_ws}" if _inc else ""))
+                seg = f"• **{nm}** `{t}` · {win_status}"
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
                     seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
