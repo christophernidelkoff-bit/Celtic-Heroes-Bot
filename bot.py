@@ -143,38 +143,43 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 
-# --- Unicode-only emoji assignment for subscription panels ---
-SAFE_UNICODE_POOL = [
-    "⭐","🔥","⚔️","🛡️","🐉","💀","🏹","🧙‍♂️","🧙‍♀️","🧊",
-    "☄️","💍","📯","🎯","🗡️","🧪","🏆","🔱","🪓","🧭",
-    "🗺️","🕯️","⚖️","🪄","📜","🪶","🐺","🦅","🦂","🐍",
-    "👑","🔮","⛏️","💎","🧬","⚗️","🎣","🕰️","🧱","🪨"
-]
-import hashlib as _hashlib
-def stable_unicode_emoji(bid, name) -> str:
-    """Return a deterministic Unicode emoji from SAFE_UNICODE_POOL.
-    Error checks:
-      1) Non-string name or encoding failure → fallback to bid only.
-      2) Empty pool → '⭐' fallback.
-      3) Validate result (no control chars, short length), else '⭐'.
+# --- Panel text sanitizer (patch: fix mojibake e.g., "Cromâ€™s") ---
+_MOJIBAKE_HINTS = ("Ã", "â", "ðŸ")
+def _sanitize_panel_text(s):
     """
+    Return a cleaned string for panel display.
+    Error checks:
+      1) Non-string or empty -> return as-is to avoid crashes.
+      2) If mojibake hints present, try latin1->utf8 round-trip.
+      3) Validate printable result; if control-chars present, fall back to a simple ASCII apostrophe fix.
+    """
+    if not isinstance(s, str) or not s:
+        return s
+    out = s
     try:
-        key = f"{int(bid)}:{str(name)}".encode("utf-8", "ignore")
+        if any(h in out for h in _MOJIBAKE_HINTS):
+            try:
+                cand = out.encode("latin1", "ignore").decode("utf-8", "ignore")
+                if cand:
+                    out = cand
+            except Exception:
+                pass
+        # Targeted common fixes
+        out = (out.replace("â€™", "’")
+                 .replace("â€œ", "“")
+                 .replace("â€", "”")
+                 .replace("â€“", "–")
+                 .replace("â€”", "—"))
+        # Error check: strip stray controls
+        if any(ord(ch) < 32 for ch in out):
+            out = "".join(ch for ch in out if ord(ch) >= 32)
+        # Fallback: ensure basic apostrophe looks right
+        out = out.replace("’", "’")  # idempotent
+        return out
     except Exception:
-        try:
-            key = f"{int(bid)}".encode("utf-8", "ignore")
-        except Exception:
-            key = b"0"
-    pool = SAFE_UNICODE_POOL or ["⭐"]
-    idx = int.from_bytes(_hashlib.sha256(key).digest()[:4], "big") % len(pool)
-    e = pool[idx]
-    try:
-        if not isinstance(e, str) or not e or any(ord(ch) < 32 for ch in e) or len(e) > 6:
-            return "⭐"
-    except Exception:
-        return "⭐"
-    return e
-# --- End helper ---
+        # Safe fallback: normalize to ASCII apostrophe only
+        return s.replace("â€™", "'")
+# --- End sanitizer ---
 from dotenv import load_dotenv
 
 # -------------------- ENV / GLOBALS --------------------
@@ -738,11 +743,12 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     lines = []
     per_message_emojis = []
     for bid, name, _sk in rows:
-        e = stable_unicode_emoji(bid, name)
+        nm = _sanitize_panel_text(name)
+        e = emoji_map.get(bid, "â­")
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
-        lines.append(f"{e} — **{name}**")
+        lines.append(f"{e} — **{nm}**")
     bucket = ""; fields: List[str] = []
     for line in lines:
         if len(bucket) + len(line) + 1 > 1000:
