@@ -143,6 +143,36 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 
+# --- Patch B: minimal emoji resolver ---
+import re as _re_emi
+_CUSTOM_EMOJI = _re_emi.compile(r"^<a?:\w+:(\d+)>$")
+def _resolve_guild_emoji(guild, e: str) -> str:
+    """
+    Return a guild-valid emoji string. Fallback to '⭐' if invalid.
+    Error checks:
+      1) Non-string/empty -> '⭐'
+      2) Custom emoji must exist in guild by ID
+      3) Control chars or too-long sequences rejected
+    """
+    try:
+        s = str(e).strip()
+    except Exception:
+        return "⭐"
+    m = _CUSTOM_EMOJI.match(s)
+    if m:
+        try:
+            eid = int(m.group(1))
+        except Exception:
+            return "⭐"
+        if guild and guild.get_emoji(eid):
+            return s
+        return "⭐"
+    # unicode sanity
+    if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
+        return "⭐"
+    return s
+# --- End Patch B helper ---
+
 # -------------------- SAFE EDIT WRAPPER (Patch A: diff + debounce) --------------------
 _EDIT_STATE: dict[int, tuple[str, float]] = {}
 _EDIT_MIN_INTERVAL_SEC = 10.0  # per-message debounce window
@@ -385,85 +415,6 @@ def category_emoji(c: str) -> str:
     except Exception:
         emo = "📄"
     return emo
-
-# --- Patch B: Emoji validation + normalization for panels ---
-import unicodedata, re
-CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w+:(\d+)>$")
-SAFE_EMOJI_POOL = [
-    "⭐","🔥","⚔️","🛡️","🐉","🐲","💀","🏹","🧙‍♂️","🧙‍♀️",
-    "🧊","☄️","💍","📯","🎯","🗡️","🧪","🏆","🔱","🪓",
-    "🧵","🪙","🧰","🧭","🗺️","🕯️","⚖️","🪄","📜","🪶",
-    "🐺","🦅","🦂","🐍","🦹‍♂️","🧞","🧟","👑","🔮","⛏️",
-    "💎","🧬","⚗️","🧯"
-]
-
-def _is_valid_unicode_emoji(s: str) -> bool:
-    if not s or not isinstance(s, str):
-        return False
-    if "<" in s or ">" in s:
-        return False
-    if any(ord(ch) < 32 for ch in s):
-        return False
-    return len(s) <= 6
-
-def resolve_emoji_for_guild(e: str, guild) -> str:
-    try:
-        s = str(e).strip()
-    except Exception:
-        return "⭐"
-    m = CUSTOM_EMOJI_RE.match(s)
-    if m:
-        try:
-            eid = int(m.group(1))
-        except Exception:
-            return "⭐"
-        if guild and guild.get_emoji(eid):
-            return s
-        return "⭐"
-    return s if _is_valid_unicode_emoji(s) else "⭐"
-
-async def normalize_panel_emojis_for_guild(guild_id: int):
-    guild = bot.get_guild(guild_id)
-    if not guild:
-        return
-    try:
-        import aiosqlite
-        async with aiosqlite.connect(DB_PATH) as db:
-            c = await db.execute("SELECT id,name FROM bosses WHERE guild_id=? ORDER BY id", (guild_id,))
-            bosses = await c.fetchall()
-            c = await db.execute("SELECT boss_id,emoji FROM subscription_emojis WHERE guild_id=?", (guild_id,))
-            rows = await c.fetchall()
-            cur = {int(b): str(e) for b, e in rows}
-            used = set()
-            for bid, e in list(cur.items()):
-                s = resolve_emoji_for_guild(e, guild)
-                if s != e:
-                    cur[bid] = s
-                if s:
-                    used.add(s)
-            avail = [em for em in SAFE_EMOJI_POOL if em not in used]
-            changed = 0
-            seen = {}
-            for bid, _nm in bosses:
-                s = cur.get(bid, "")
-                if not s or s in seen:
-                    if not avail:
-                        avail = list(SAFE_EMOJI_POOL)
-                    s = avail.pop(0)
-                    cur[bid] = s
-                    changed += 1
-                seen[s] = bid
-            if changed:
-                for bid, s in cur.items():
-                    await db.execute(
-                        "INSERT INTO subscription_emojis (guild_id,boss_id,emoji) VALUES (?,?,?) "
-                        "ON CONFLICT(guild_id,boss_id) DO UPDATE SET emoji=excluded.emoji",
-                        (guild_id, bid, s)
-                    )
-                await db.commit()
-    except Exception as e:
-        log.warning(f"[emoji-normalize] g{guild_id} failed: {e}")
-# --- End Patch B helpers ---
 
 DEFAULT_COLORS = {
     "Warden": 0x2ecc71, "Meteoric": 0xe67e22, "Frozen": 0x3498db,
@@ -895,8 +846,6 @@ async def delete_old_subscription_messages(guild: discord.Guild):
     await clear_all_panel_records(gid)
 
 async def refresh_subscription_messages(guild: discord.Guild):
-    # Patch B: normalize emoji map for this guild
-    await normalize_panel_emojis_for_guild(guild.id)
     gid = guild.id
     sub_ch_id = await get_subchannel_id(gid)
     if not sub_ch_id:
@@ -947,14 +896,30 @@ async def refresh_subscription_messages(guild: discord.Guild):
             except Exception as e:
                 log.warning(f"Subscription panel ({cat}) create failed: {e}")
                 continue
-        if can_react(channel) and message:
-            try:
-                existing = set(str(r.emoji) for r in message.reactions)
-                for e in [e for e in emojis if e not in existing]:
-                    await message.add_reaction(e)
-                    await asyncio.sleep(0.2)
-            except Exception as e:
-                log.warning(f"Adding reactions failed for {cat}: {e}")
+        
+if can_react(channel) and message:
+    # Patch B: validate emojis before adding to avoid Unknown Emoji (10014)
+    try:
+        planned = list(emojis)
+    except Exception:
+        planned = []
+    # Build unique, resolved list
+    resolved = []
+    seen = set(str(r.emoji) for r in message.reactions) if hasattr(message, "reactions") else set()
+    for raw in planned:
+        safe_e = _resolve_guild_emoji(guild, raw)
+        key = str(safe_e)
+        if not key or key in seen or key in (str(x) for x in resolved):
+            continue
+        resolved.append(safe_e)
+    # Add reactions with basic retry on failure
+    for safe_e in resolved:
+        try:
+            await message.add_reaction(safe_e)
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            log.warning(f"Adding reactions failed for {cat}: {e}")
+
 
 # -------------------- SUBSCRIPTION PINGS (separate channel supported) --------------------
 async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_name: str, when_left: Optional[int] = None):
