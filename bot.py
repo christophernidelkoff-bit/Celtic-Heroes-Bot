@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-# --- Text and emoji display sanitizers (panel-only) ---
+# --- Panel display sanitizers (text-only) ---
 def _clean_text(s):
     """Return cleaned Unicode text. Error checks:
     1) Non-string passthrough; 2) latin1→utf8 fallback when hints present;
@@ -833,10 +833,9 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     lines = []
     per_message_emojis = []
     for bid, name, _sk in rows:
-        nm = _clean_text(name)
-        de = _display_emoji(emoji_map.get(bid, '⭐'))
-
         e = emoji_map.get(bid, "⭐")
+        de = _display_emoji(e)
+        nm = _clean_text(name)
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
