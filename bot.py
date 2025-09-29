@@ -1,48 +1,4 @@
-# --- Global output sanitization helpers (one-change patch) ---
-def _clean_text(s):
-    if not isinstance(s, str):
-        return s
-    out = s
-    if ('Ã' in out) or ('â' in out) or ('ðŸ' in out):
-        try:
-            cand = out.encode('latin1','ignore').decode('utf-8','ignore')
-            if cand:
-                out = cand
-        except Exception:
-            out = (out.replace('â€™','’')
-                     .replace('â€œ','“')
-                     .replace('â€\x9d','”')
-                     .replace('â€“','–')
-                     .replace('â€”','—'))
-    try:
-        if any(ord(ch) < 32 for ch in out):
-            out = ''.join(ch for ch in out if ord(ch) >= 32)
-    except Exception:
-        pass
-    return out
-def _sanitize_embed(embed):
-    try:
-        from discord import Embed
-    except Exception:
-        return embed
-    try:
-        if not isinstance(embed, Embed):
-            return embed
-        d = embed.to_dict()
-        if d.get('title'):
-            d['title'] = _clean_text(d['title'])
-        if d.get('description'):
-            d['description'] = _clean_text(d['description'])
-        if d.get('fields'):
-            for f in d['fields']:
-                if 'name' in f and f['name']:
-                    f['name'] = _clean_text(f['name'])
-                if 'value' in f and f['value']:
-                    f['value'] = _clean_text(f['value'])
-        return Embed.from_dict(d)
-    except Exception:
-        return embed
-# --- End sanitization helpers ---
+from __future__ import annotations
 
 # -------------------- Celtic Heroes Boss Tracker — Foundations (Part 1/4) --------------------
 # Features in this part:
@@ -56,7 +12,6 @@ def _sanitize_embed(embed):
 # - Subscription panels: emoji mapping + builders + refresh cycle
 # - Subscription ping helper (separate designated channel supported)
 
-from __future__ import annotations
 # --- Emoji constants and safe send helper (mojibake fix) ---
 EMJ_HOURGLASS = "⏳"
 EMJ_CLOCK = "🕓"
@@ -220,19 +175,6 @@ async def safe_edit(message, /, **kwargs):
     elif embed is not None:
         kwargs["embeds"] = [embed]
     elif embeds is None:
-
-        # Sanitize outgoing content and embeds
-        if 'content' in kwargs and kwargs['content'] is not None:
-            try:
-                kwargs['content'] = _clean_text(kwargs['content'])
-            except Exception:
-                pass
-        el = kwargs.get('embeds')
-        if el:
-            try:
-                kwargs['embeds'] = [_sanitize_embed(e) for e in el]
-            except Exception:
-                pass
         # no embeds provided
         pass
 
