@@ -141,6 +141,27 @@ from datetime import datetime, timezone
 import aiosqlite
 import discord
 from discord.ext import commands, tasks
+# --- Unicode-only emoji helper (Patch B minimal) ---
+def _to_unicode_only(e) -> str:
+    """Return a safe Unicode emoji or '⭐' if invalid or custom.
+    Error checks:
+      1) Non-string input -> '⭐'
+      2) Reject custom emoji markup like <:name:id> or <a:name:id>
+      3) Control chars or too-long sequences -> '⭐'
+    """
+    try:
+        s = str(e).strip()
+    except Exception:
+        return '⭐'
+    # custom emoji markers contain angle brackets
+    if '<' in s or '>' in s:
+        return '⭐'
+    # basic sanitation
+    if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
+        return '⭐'
+    return s
+# --- End helper ---
+
 from discord import app_commands
 
 # -------------------- SAFE EDIT WRAPPER (Patch A: diff + debounce) --------------------
@@ -208,7 +229,7 @@ async def safe_edit(message, /, **kwargs):
             return False  # too soon; next tick will try again
 
     try:
-        await message.edit(**kwargs)
+        await safe_edit(message, **kwargs)
         _EDIT_STATE[message.id] = (digest, now)
         return True
     except HTTPException as e:
@@ -783,7 +804,7 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     lines = []
     per_message_emojis = []
     for bid, name, _sk in rows:
-        e = emoji_map.get(bid, "â­")
+        e = emoji_map.get(bid, "⭐")
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
@@ -867,14 +888,30 @@ async def refresh_subscription_messages(guild: discord.Guild):
                 log.warning(f"Subscription panel ({cat}) create failed: {e}")
                 continue
         if can_react(channel) and message:
+            # Unicode-only reactions to eliminate Unknown Emoji (10014)
             try:
-                existing = set(str(r.emoji) for r in message.reactions)
-                for e in [e for e in emojis if e not in existing]:
+                planned = list(emojis)
+            except Exception:
+                planned = []
+            # Error check: guard when message.reactions isn't available
+            try:
+                existing = set(str(r.emoji) for r in getattr(message, 'reactions', []))
+            except Exception:
+                existing = set()
+            resolved = []
+            seen = set(existing)
+            for raw in planned:
+                e = _to_unicode_only(raw)
+                if not e or e in seen:
+                    continue
+                resolved.append(e)
+                seen.add(e)
+            for e in resolved:
+                try:
                     await message.add_reaction(e)
                     await asyncio.sleep(0.2)
-            except Exception as e:
-                log.warning(f"Adding reactions failed for {cat}: {e}")
-
+                except Exception as err:
+                    log.warning(f'Adding reactions failed for {cat}: {err}')
 # -------------------- SUBSCRIPTION PINGS (separate channel supported) --------------------
 async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_name: str, when_left: Optional[int] = None):
     async with aiosqlite.connect(DB_PATH) as db:
