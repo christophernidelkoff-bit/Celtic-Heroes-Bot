@@ -142,44 +142,6 @@ import aiosqlite
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-
-# --- Panel text sanitizer (patch: fix mojibake e.g., "Cromâ€™s") ---
-_MOJIBAKE_HINTS = ("Ã", "â", "ðŸ")
-def _sanitize_panel_text(s):
-    """
-    Return a cleaned string for panel display.
-    Error checks:
-      1) Non-string or empty -> return as-is to avoid crashes.
-      2) If mojibake hints present, try latin1->utf8 round-trip.
-      3) Validate printable result; if control-chars present, fall back to a simple ASCII apostrophe fix.
-    """
-    if not isinstance(s, str) or not s:
-        return s
-    out = s
-    try:
-        if any(h in out for h in _MOJIBAKE_HINTS):
-            try:
-                cand = out.encode("latin1", "ignore").decode("utf-8", "ignore")
-                if cand:
-                    out = cand
-            except Exception:
-                pass
-        # Targeted common fixes
-        out = (out.replace("â€™", "’")
-                 .replace("â€œ", "“")
-                 .replace("â€", "”")
-                 .replace("â€“", "–")
-                 .replace("â€”", "—"))
-        # Error check: strip stray controls
-        if any(ord(ch) < 32 for ch in out):
-            out = "".join(ch for ch in out if ord(ch) >= 32)
-        # Fallback: ensure basic apostrophe looks right
-        out = out.replace("’", "’")  # idempotent
-        return out
-    except Exception:
-        # Safe fallback: normalize to ASCII apostrophe only
-        return s.replace("â€™", "'")
-# --- End sanitizer ---
 from dotenv import load_dotenv
 
 # -------------------- ENV / GLOBALS --------------------
@@ -743,12 +705,11 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     lines = []
     per_message_emojis = []
     for bid, name, _sk in rows:
-        nm = _sanitize_panel_text(name)
         e = emoji_map.get(bid, "â­")
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
-        lines.append(f"{e} — **{nm}**")
+        lines.append(f"{e} — **{name}**")
     bucket = ""; fields: List[str] = []
     for line in lines:
         if len(bucket) + len(line) + 1 > 1000:
@@ -5264,7 +5225,17 @@ async def _build_timer_embeds_compact(guild: dm.Guild, categories: _List[str]):
         # compact one-liners: Name — `t` · Window[ · ETA HH:MM]
         for _, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            seg = f"• **{nm}** — `{t}` · {win_status}"
+            _ws = ''
+            try:
+                _ws = str(win_status) if win_status is not None else ''
+            except Exception:
+                _ws = ''
+            # Error check: strip control chars
+            if any(ord(ch) < 32 for ch in _ws):
+                _ws = ''.join(ch for ch in _ws if ord(ch) >= 32)
+            # Error check: include only when not pending
+            _inc = bool(_ws) and ('pending' not in _ws.lower())
+            seg = f"• **{nm}** — `{t}`" + (f" · {_ws}" if _inc else "")
             if show_eta and (ts - now) > 0:
                 try:
                     from datetime import datetime, timezone
@@ -5497,7 +5468,17 @@ async def _build_timer_embeds_count_missing_only(guild: dm.Guild, categories: Li
                     missing_count += 1
                     continue
                 win_status = window_label(now, tts, win)
-                seg = f"• **{nm}** `{t}` · {win_status}"
+                _ws = ''
+                try:
+                    _ws = str(win_status) if win_status is not None else ''
+                except Exception:
+                    _ws = ''
+                # Error check: strip control chars
+                if any(ord(ch) < 32 for ch in _ws):
+                    _ws = ''.join(ch for ch in _ws if ord(ch) >= 32)
+                # Error check: include only when not pending
+                _inc = bool(_ws) and ('pending' not in _ws.lower())
+                seg = f"• **{nm}** — `{t}`" + (f" · {_ws}" if _inc else "")
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
                     seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
