@@ -386,6 +386,97 @@ def category_emoji(c: str) -> str:
         emo = "📄"
     return emo
 
+# --- Patch B: Emoji validation + normalization for panels ---
+import unicodedata
+CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w+:(\d+)>$")
+SAFE_EMOJI_POOL = [
+    "⭐","🔥","⚔️","🛡️","🐉","🐲","💀","🏹","🧙‍♂️","🧙‍♀️",
+    "🧊","☄️","💍","📯","🎯","🗡️","🧪","🏆","🔱","🪓",
+    "🧵","🪙","🧰","🧭","🗺️","🕯️","⚖️","🪄","📜","🪶",
+    "🐺","🦅","🦂","🐍","🦹‍♂️","🧞","🧟","👑","🔮","⛏️",
+    "🧵","🧷","🧲","🧱","🪵","🪨","💎","🧬","⚗️","🧯"
+]
+
+def _is_valid_unicode_emoji(s: str) -> bool:
+    if not s or not isinstance(s, str):
+        return False
+    if "<" in s or ">" in s:
+        return False
+    if any(ord(ch) < 32 for ch in s):
+        return False
+    # Bound grapheme cluster length
+    return len(s) <= 6
+
+def resolve_emoji_for_guild(e: str, guild) -> str:
+    """Return a guild-valid emoji string; fallback to '⭐'."""
+    try:
+        s = str(e).strip()
+    except Exception:
+        return "⭐"
+    m = CUSTOM_EMOJI_RE.match(s)
+    if m:
+        try:
+            eid = int(m.group(1))
+        except Exception:
+            return "⭐"
+        if guild and guild.get_emoji(eid):
+            return s  # keep custom form
+        return "⭐"
+    return s if _is_valid_unicode_emoji(s) else "⭐"
+
+async def normalize_panel_emojis_for_guild(guild_id: int):
+    """Rewrite DB emoji map to safe values for this guild with uniqueness.
+       Three checks: guards DB errors, ensures uniqueness, pool exhaustion handling."""
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return
+    try:
+        import aiosqlite
+        async with aiosqlite.connect(DB_PATH) as db:
+            # Load bosses for stable assignment order
+            c = await db.execute("SELECT id,name FROM bosses WHERE guild_id=? ORDER BY id", (guild_id,))
+            bosses = await c.fetchall()
+            # Current mapping
+            c = await db.execute("SELECT boss_id,emoji FROM subscription_emojis WHERE guild_id=?", (guild_id,))
+            rows = await c.fetchall()
+            cur = {int(b): str(e) for b, e in rows}
+            used = set()
+            # Pass 1: keep valid, note used
+            for bid, e in list(cur.items()):
+                s = resolve_emoji_for_guild(e, guild)
+                if s != e:
+                    cur[bid] = s
+                if s:
+                    used.add(s)
+            # Build available pool
+            avail = [em for em in SAFE_EMOJI_POOL if em not in used]
+            changed = 0
+            # Pass 2: assign invalid/empty and resolve duplicates
+            seen = {}
+            for bid, _nm in bosses:
+                s = cur.get(bid, "")
+                if not s or s in seen:
+                    # Need a fresh one
+                    if not avail:
+                        # Refill from pool ignoring used to guarantee progress
+                        avail = list(SAFE_EMOJI_POOL)
+                    s = avail.pop(0)
+                    cur[bid] = s
+                    changed += 1
+                seen[s] = bid
+            # Persist
+            if changed:
+                for bid, s in cur.items():
+                    await db.execute(
+                        "INSERT INTO subscription_emojis (guild_id,boss_id,emoji) VALUES (?,?,?) "
+                        "ON CONFLICT(guild_id,boss_id) DO UPDATE SET emoji=excluded.emoji",
+                        (guild_id, bid, s)
+                    )
+                await db.commit()
+    except Exception as e:
+        log.warning(f"[emoji-normalize] g{guild_id} failed: {e}")
+# --- End Patch B helpers ---
+
 DEFAULT_COLORS = {
     "Warden": 0x2ecc71, "Meteoric": 0xe67e22, "Frozen": 0x3498db,
     "DL": 0xe74c3c, "EDL": 0x8e44ad, "Midraids": 0x34495e,
@@ -783,7 +874,7 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     lines = []
     per_message_emojis = []
     for bid, name, _sk in rows:
-        e = emoji_map.get(bid, "â­")
+        e = emoji_map.get(bid, "⭐")
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
@@ -822,6 +913,9 @@ async def refresh_subscription_messages(guild: discord.Guild):
         return
     channel = guild.get_channel(sub_ch_id)
     if not can_send(channel):
+
+    # Patch B: normalize emoji mapping to guild-valid, unique values
+    await normalize_panel_emojis_for_guild(guild.id)
         return
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute("SELECT id,name FROM bosses WHERE guild_id=?", (gid,))
