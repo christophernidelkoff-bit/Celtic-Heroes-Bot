@@ -141,30 +141,22 @@ from datetime import datetime, timezone
 import aiosqlite
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
-
-# --- Patch B.4 helpers: minimal emoji validators ---
-import re as _re_emi2
-_CUSTOM_EMOJI_2 = _re_emi2.compile(r"^<a?:\w+:(\d+)>$")
-def _is_unicode_emoji_safe(s: str) -> bool:
-    if not isinstance(s, str) or not s:
-        return False
-    if "<" in s or ">" in s:  # custom emoji marker
-        return False
-    if any(ord(ch) < 32 for ch in s):
-        return False
-    return len(s) <= 6  # bound grapheme length
+# --- Patch B: minimal unicode-only emoji helper ---
+import re as _re_panel_emoji
+_CUSTOM_EMOJI_PANEL = _re_panel_emoji.compile(r"^<a?:\w+:(\d+)>$")
 def _to_safe_unicode_emoji(guild, e) -> str:
     try:
         s = str(e).strip()
     except Exception:
-        return "⭐"
-    # reject custom emoji strings
-    m = _CUSTOM_EMOJI_2.match(s)
-    if m:
-        return "⭐"
-    return s if _is_unicode_emoji_safe(s) else "⭐"
-# --- end helpers ---
+        return '⭐'
+    if _CUSTOM_EMOJI_PANEL.match(s):
+        return '⭐'
+    if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
+        return '⭐'
+    return s
+# --- End helper ---
+
+from discord import app_commands
 from dotenv import load_dotenv
 
 # -------------------- ENV / GLOBALS --------------------
@@ -728,7 +720,7 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     lines = []
     per_message_emojis = []
     for bid, name, _sk in rows:
-        e = emoji_map.get(bid, "⭐")
+        e = emoji_map.get(bid, "â­")
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
@@ -811,32 +803,15 @@ async def refresh_subscription_messages(guild: discord.Guild):
             except Exception as e:
                 log.warning(f"Subscription panel ({cat}) create failed: {e}")
                 continue
-        
         if can_react(channel) and message:
-            # Patch B.4: strict unicode-only reactions to avoid 10014
             try:
-                planned = list(emojis)
-            except Exception:
-                planned = []
-            try:
-                existing = set(str(r.emoji) for r in getattr(message, "reactions", []))
-            except Exception:
-                existing = set()
-            resolved = []
-            seen = set(existing)
-            for raw in planned:
-                safe_e = _to_safe_unicode_emoji(guild, raw)
-                key = str(safe_e)
-                if not key or key in seen:
-                    continue
-                resolved.append(safe_e)
-                seen.add(key)
-            for safe_e in resolved:
-                try:
-                    await message.add_reaction(safe_e)
+                existing = set(str(r.emoji) for r in message.reactions)
+                for e in [e for e in emojis if e not in existing]:
+                    await message.add_reaction(e)
                     await asyncio.sleep(0.2)
-                except Exception as e:
-                    log.warning(f"Adding reactions failed for {cat}: {e}")
+            except Exception as e:
+                log.warning(f"Adding reactions failed for {cat}: {e}")
+
 # -------------------- SUBSCRIPTION PINGS (separate channel supported) --------------------
 async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_name: str, when_left: Optional[int] = None):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -5402,7 +5377,7 @@ async def _build_timer_embeds_compact(guild, categories):
                     nada.append(f"· **{nm}** — `{t}`")
                     continue
                 stat = window_label(now, tts, win)
-                seg = f"• **{nm}** — `{t}` · {stat}"
+                seg = f"• **{nm}** — `{t}`" + (f" · {stat}" if (stat and "pending" not in str(stat).lower()) else "")
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
                     seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
