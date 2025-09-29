@@ -1,3 +1,49 @@
+# --- Global output sanitization helpers (one-change patch) ---
+def _clean_text(s):
+    if not isinstance(s, str):
+        return s
+    out = s
+    if ('Ã' in out) or ('â' in out) or ('ðŸ' in out):
+        try:
+            cand = out.encode('latin1','ignore').decode('utf-8','ignore')
+            if cand:
+                out = cand
+        except Exception:
+            out = (out.replace('â€™','’')
+                     .replace('â€œ','“')
+                     .replace('â€\x9d','”')
+                     .replace('â€“','–')
+                     .replace('â€”','—'))
+    try:
+        if any(ord(ch) < 32 for ch in out):
+            out = ''.join(ch for ch in out if ord(ch) >= 32)
+    except Exception:
+        pass
+    return out
+def _sanitize_embed(embed):
+    try:
+        from discord import Embed
+    except Exception:
+        return embed
+    try:
+        if not isinstance(embed, Embed):
+            return embed
+        d = embed.to_dict()
+        if d.get('title'):
+            d['title'] = _clean_text(d['title'])
+        if d.get('description'):
+            d['description'] = _clean_text(d['description'])
+        if d.get('fields'):
+            for f in d['fields']:
+                if 'name' in f and f['name']:
+                    f['name'] = _clean_text(f['name'])
+                if 'value' in f and f['value']:
+                    f['value'] = _clean_text(f['value'])
+        return Embed.from_dict(d)
+    except Exception:
+        return embed
+# --- End sanitization helpers ---
+
 # -------------------- Celtic Heroes Boss Tracker — Foundations (Part 1/4) --------------------
 # Features in this part:
 # - Env & logging, intents, globals
@@ -142,6 +188,97 @@ import aiosqlite
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
+
+# -------------------- SAFE EDIT WRAPPER (Patch A: diff + debounce) --------------------
+_EDIT_STATE: dict[int, tuple[str, float]] = {}
+_EDIT_MIN_INTERVAL_SEC = 10.0  # per-message debounce window
+
+async def safe_edit(message, /, **kwargs):
+    """Edit a message only if payload changed and not too soon.
+    Returns True if an edit was sent, False otherwise.
+    Extra checks:
+      1) Normalize 'embed'/'embeds' to a list.
+      2) Skip if computed payload hash unchanged.
+      3) Per-message debounce to reduce 429 rate limits.
+    """
+    import asyncio, logging, time, json, hashlib
+    from discord import HTTPException
+
+    logger = logging.getLogger("safe_edit")
+
+    # Error check 1: message must have .id and .edit
+    if not hasattr(message, "id") or not hasattr(message, "edit"):
+        logger.warning("safe_edit: invalid message object; skipping")
+        return False
+
+    # Normalize embed(s)
+    embed = kwargs.pop("embed", None)
+    embeds = kwargs.get("embeds")
+    if embed is not None and embeds is not None:
+        # Prefer 'embeds' if both are supplied
+        logger.warning("safe_edit: both 'embed' and 'embeds' provided; using 'embeds'")
+    elif embed is not None:
+        kwargs["embeds"] = [embed]
+    elif embeds is None:
+
+        # Sanitize outgoing content and embeds
+        if 'content' in kwargs and kwargs['content'] is not None:
+            try:
+                kwargs['content'] = _clean_text(kwargs['content'])
+            except Exception:
+                pass
+        el = kwargs.get('embeds')
+        if el:
+            try:
+                kwargs['embeds'] = [_sanitize_embed(e) for e in el]
+            except Exception:
+                pass
+        # no embeds provided
+        pass
+
+    # Prepare a stable payload for hashing
+    payload = {
+        "content": kwargs.get("content"),
+        "embeds": None,
+        "allowed_mentions": kwargs.get("allowed_mentions").to_dict() if kwargs.get("allowed_mentions") else None,
+    }
+    e_list = kwargs.get("embeds")
+    if e_list:
+        try:
+            payload["embeds"] = [e.to_dict() if hasattr(e, "to_dict") else None for e in e_list]
+        except Exception:
+            payload["embeds"] = None
+
+    try:
+        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        blob = str(payload)
+    digest = hashlib.sha256(blob.encode("utf-8", "ignore")).hexdigest()
+
+    last = _EDIT_STATE.get(message.id)
+    now = asyncio.get_event_loop().time()
+
+    # Error check 2: debounce
+    if last is not None:
+        last_hash, last_ts = last
+        if digest == last_hash:
+            return False  # unchanged
+        if now - last_ts < _EDIT_MIN_INTERVAL_SEC:
+            return False  # too soon; next tick will try again
+
+    try:
+        await safe_edit(message, **kwargs)
+        _EDIT_STATE[message.id] = (digest, now)
+        return True
+    except HTTPException as e:
+        # Error check 3: swallow 429, log, and do not retry immediately
+        if getattr(e, "status", None) == 429:
+            logger.warning("safe_edit: 429 rate limited on message %s", message.id)
+            _EDIT_STATE[message.id] = (digest, now)  # record attempt to space out
+            return False
+        # Other HTTP errors bubble up for visibility
+        raise
+# ------------------ END SAFE EDIT WRAPPER ------------------
 from dotenv import load_dotenv
 
 # -------------------- ENV / GLOBALS --------------------
@@ -773,7 +910,7 @@ async def refresh_subscription_messages(guild: discord.Guild):
         if existing_id:
             try:
                 message = await channel.fetch_message(existing_id)
-                await message.edit(content=content, embed=embed)
+                await safe_edit(message, content=content, embed=embed)
             except Exception:
                 try:
                     message = await channel.send(content=content, embed=embed)
@@ -2930,7 +3067,7 @@ async def _update_market_message_embed(guild: discord.Guild, listing_row: tuple)
         recent_offers=recent
     )
     try:
-        await msg.edit(embed=em)
+        await safe_edit(msg, embed=em)
     except Exception:
         pass
 
@@ -3093,7 +3230,7 @@ async def market_post(inter: discord.Interaction, item: str, trades: bool, offer
     # attach view
     view = ListingView(listing_id=listing_id, section=LM_SEC_MARKET, author_id=inter.user.id, taking_offers=offers, thread_id=thread_id)
     try:
-        await msg.edit(view=view)
+        await safe_edit(msg, view=view)
     except Exception:
         pass
 
@@ -3242,7 +3379,7 @@ async def lix_post(inter: discord.Interaction, name: str, class_: str, level: st
     # attach view (close only)
     view = ListingView(listing_id=listing_id, section=LM_SEC_LIX, author_id=inter.user.id, taking_offers=False, thread_id=None)
     try:
-        await msg.edit(view=view)
+        await safe_edit(msg, view=view)
     except Exception:
         pass
 
@@ -3606,7 +3743,7 @@ async def ensure_welcome_prompt(guild: discord.Guild):
         try:
             msg = await ch.fetch_message(msg_id)
             try:
-                await msg.edit(content=content, view=view)
+                await safe_edit(msg, content=content, view=view)
                 return
             except Exception:
                 pass
@@ -4468,7 +4605,7 @@ async def _roster_edit_or_post(guild: discord.Guild, member: discord.Member, row
     if roster_msg_id:
         try:
             msg = await ch.fetch_message(int(roster_msg_id))
-            await msg.edit(embed=e)
+            await safe_edit(msg, embed=e)
             return msg
         except Exception:
             pass
@@ -5225,17 +5362,7 @@ async def _build_timer_embeds_compact(guild: dm.Guild, categories: _List[str]):
         # compact one-liners: Name — `t` · Window[ · ETA HH:MM]
         for _, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            _ws = ''
-            try:
-                _ws = str(win_status) if win_status is not None else ''
-            except Exception:
-                _ws = ''
-            # Error check: strip control chars
-            if any(ord(ch) < 32 for ch in _ws):
-                _ws = ''.join(ch for ch in _ws if ord(ch) >= 32)
-            # Error check: include only when not pending
-            _inc = bool(_ws) and ('pending' not in _ws.lower())
-            seg = f"• **{nm}** — `{t}`" + (f" · {_ws}" if _inc else "")
+            seg = f"• **{nm}** — `{t}` · {win_status}"
             if show_eta and (ts - now) > 0:
                 try:
                     from datetime import datetime, timezone
@@ -5468,17 +5595,12 @@ async def _build_timer_embeds_count_missing_only(guild: dm.Guild, categories: Li
                     missing_count += 1
                     continue
                 win_status = window_label(now, tts, win)
-                _ws = ''
                 try:
-                    _ws = str(win_status) if win_status is not None else ''
+                    _ws = str(win_status)
                 except Exception:
-                    _ws = ''
-                # Error check: strip control chars
-                if any(ord(ch) < 32 for ch in _ws):
-                    _ws = ''.join(ch for ch in _ws if ord(ch) >= 32)
-                # Error check: include only when not pending
-                _inc = bool(_ws) and ('pending' not in _ws.lower())
-                seg = f"• **{nm}** — `{t}`" + (f" · {_ws}" if _inc else "")
+                    _ws = ""
+                _inc = (bool(_ws) and ("pending" not in _ws.lower()))
+                seg = (f"• **{nm}** `{t}`" + (f" · {_ws}" if _inc else ""))
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
                     seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
