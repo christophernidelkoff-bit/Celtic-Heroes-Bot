@@ -1744,7 +1744,8 @@ async def timers_cmd(ctx):
         blocks: List[str] = []
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
-            line1 = f"ã€” **{nm}** • Spawn: `{t}` • Window: `{win_status}` ã€•"
+            win_seg = (f" • Window: `{win_status}`" if isinstance(win_status, str) and "pending" not in win_status.lower() else "")
+            line1 = f"ã€” **{nm}** • Spawn: `{t}`{win_seg} ã€•"
             eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
@@ -5362,7 +5363,8 @@ async def _build_timer_embeds_compact(guild, categories):
                     nada.append(f"· **{nm}** — `{t}`")
                     continue
                 stat = window_label(now, tts, win)
-                seg = f"• **{nm}** — `{t}` · {stat}"
+                win_seg = (f" · Window: {stat}" if isinstance(stat, str) and "pending" not in stat.lower() else "")
+                seg = f"• **{nm}** — `{t}`{win_seg}"
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
                     seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
