@@ -141,108 +141,30 @@ from datetime import datetime, timezone
 import aiosqlite
 import discord
 from discord.ext import commands, tasks
-# --- Patch B: minimal emoji resolver ---
-import re as _re_emi
-_CUSTOM_EMOJI = _re_emi.compile(r"^<a?:\w+:(\d+)>$")
-def _resolve_guild_emoji(guild, e: str) -> str:
-    """Return a guild-valid emoji string. Fallback to ⭐ if invalid."""
+from discord import app_commands
+
+# --- Patch B.4 helpers: minimal emoji validators ---
+import re as _re_emi2
+_CUSTOM_EMOJI_2 = _re_emi2.compile(r"^<a?:\w+:(\d+)>$")
+def _is_unicode_emoji_safe(s: str) -> bool:
+    if not isinstance(s, str) or not s:
+        return False
+    if "<" in s or ">" in s:  # custom emoji marker
+        return False
+    if any(ord(ch) < 32 for ch in s):
+        return False
+    return len(s) <= 6  # bound grapheme length
+def _to_safe_unicode_emoji(guild, e) -> str:
     try:
         s = str(e).strip()
     except Exception:
-        return '⭐'
-    m = _CUSTOM_EMOJI.match(s)
+        return "⭐"
+    # reject custom emoji strings
+    m = _CUSTOM_EMOJI_2.match(s)
     if m:
-        try:
-            eid = int(m.group(1))
-        except Exception:
-            return '⭐'
-        if guild and guild.get_emoji(eid):
-            return s
-        return '⭐'
-    if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
-        return '⭐'
-    return s
-# --- End Patch B helper ---
-
-from discord import app_commands
-
-# -------------------- SAFE EDIT WRAPPER (Patch A: diff + debounce) --------------------
-_EDIT_STATE: dict[int, tuple[str, float]] = {}
-_EDIT_MIN_INTERVAL_SEC = 10.0  # per-message debounce window
-
-async def safe_edit(message, /, **kwargs):
-    """Edit a message only if payload changed and not too soon.
-    Returns True if an edit was sent, False otherwise.
-    Extra checks:
-      1) Normalize 'embed'/'embeds' to a list.
-      2) Skip if computed payload hash unchanged.
-      3) Per-message debounce to reduce 429 rate limits.
-    """
-    import asyncio, logging, time, json, hashlib
-    from discord import HTTPException
-
-    logger = logging.getLogger("safe_edit")
-
-    # Error check 1: message must have .id and .edit
-    if not hasattr(message, "id") or not hasattr(message, "edit"):
-        logger.warning("safe_edit: invalid message object; skipping")
-        return False
-
-    # Normalize embed(s)
-    embed = kwargs.pop("embed", None)
-    embeds = kwargs.get("embeds")
-    if embed is not None and embeds is not None:
-        # Prefer 'embeds' if both are supplied
-        logger.warning("safe_edit: both 'embed' and 'embeds' provided; using 'embeds'")
-    elif embed is not None:
-        kwargs["embeds"] = [embed]
-    elif embeds is None:
-        # no embeds provided
-        pass
-
-    # Prepare a stable payload for hashing
-    payload = {
-        "content": kwargs.get("content"),
-        "embeds": None,
-        "allowed_mentions": kwargs.get("allowed_mentions").to_dict() if kwargs.get("allowed_mentions") else None,
-    }
-    e_list = kwargs.get("embeds")
-    if e_list:
-        try:
-            payload["embeds"] = [e.to_dict() if hasattr(e, "to_dict") else None for e in e_list]
-        except Exception:
-            payload["embeds"] = None
-
-    try:
-        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    except Exception:
-        blob = str(payload)
-    digest = hashlib.sha256(blob.encode("utf-8", "ignore")).hexdigest()
-
-    last = _EDIT_STATE.get(message.id)
-    now = asyncio.get_event_loop().time()
-
-    # Error check 2: debounce
-    if last is not None:
-        last_hash, last_ts = last
-        if digest == last_hash:
-            return False  # unchanged
-        if now - last_ts < _EDIT_MIN_INTERVAL_SEC:
-            return False  # too soon; next tick will try again
-
-    try:
-        await safe_edit(message, **kwargs)
-        _EDIT_STATE[message.id] = (digest, now)
-        return True
-    except HTTPException as e:
-        # Error check 3: swallow 429, log, and do not retry immediately
-        if getattr(e, "status", None) == 429:
-            logger.warning("safe_edit: 429 rate limited on message %s", message.id)
-            _EDIT_STATE[message.id] = (digest, now)  # record attempt to space out
-            return False
-        # Other HTTP errors bubble up for visibility
-        raise
-# ------------------ END SAFE EDIT WRAPPER ------------------
+        return "⭐"
+    return s if _is_unicode_emoji_safe(s) else "⭐"
+# --- end helpers ---
 from dotenv import load_dotenv
 
 # -------------------- ENV / GLOBALS --------------------
@@ -874,7 +796,7 @@ async def refresh_subscription_messages(guild: discord.Guild):
         if existing_id:
             try:
                 message = await channel.fetch_message(existing_id)
-                await safe_edit(message, content=content, embed=embed)
+                await message.edit(content=content, embed=embed)
             except Exception:
                 try:
                     message = await channel.send(content=content, embed=embed)
@@ -889,26 +811,32 @@ async def refresh_subscription_messages(guild: discord.Guild):
             except Exception as e:
                 log.warning(f"Subscription panel ({cat}) create failed: {e}")
                 continue
-        if can_react(channel) and message:
-            # Patch B: validate emojis before adding to avoid Unknown Emoji (10014)
-            try:
-                planned = list(emojis)
-            except Exception:
-                planned = []
-            resolved = []
-            seen = set(str(r.emoji) for r in getattr(message, 'reactions', []))
-            for raw in planned:
-                safe_e = _resolve_guild_emoji(guild, raw)
-                key = str(safe_e)
-                if not key or key in seen or key in (str(x) for x in resolved):
-                    continue
-                resolved.append(safe_e)
-            for safe_e in resolved:
-                try:
-                    await message.add_reaction(safe_e)
-                    await asyncio.sleep(0.2)
-                except Exception as e:
-                    log.warning('Adding reactions failed for %s: %s', cat, e)
+        
+if can_react(channel) and message:
+    # Patch B.4: strict unicode-only reactions to avoid 10014
+    try:
+        planned = list(emojis)
+    except Exception:
+        planned = []
+    try:
+        existing = set(str(r.emoji) for r in getattr(message, "reactions", []))
+    except Exception:
+        existing = set()
+    resolved = []
+    seen = set(existing)
+    for raw in planned:
+        safe_e = _to_safe_unicode_emoji(guild, raw)
+        key = str(safe_e)
+        if not key or key in seen:
+            continue
+        resolved.append(safe_e)
+        seen.add(key)
+    for safe_e in resolved:
+        try:
+            await message.add_reaction(safe_e)
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            log.warning(f"Adding reactions failed for {cat}: {e}")
 # -------------------- SUBSCRIPTION PINGS (separate channel supported) --------------------
 async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_name: str, when_left: Optional[int] = None):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -3042,7 +2970,7 @@ async def _update_market_message_embed(guild: discord.Guild, listing_row: tuple)
         recent_offers=recent
     )
     try:
-        await safe_edit(msg, embed=em)
+        await msg.edit(embed=em)
     except Exception:
         pass
 
@@ -3205,7 +3133,7 @@ async def market_post(inter: discord.Interaction, item: str, trades: bool, offer
     # attach view
     view = ListingView(listing_id=listing_id, section=LM_SEC_MARKET, author_id=inter.user.id, taking_offers=offers, thread_id=thread_id)
     try:
-        await safe_edit(msg, view=view)
+        await msg.edit(view=view)
     except Exception:
         pass
 
@@ -3354,7 +3282,7 @@ async def lix_post(inter: discord.Interaction, name: str, class_: str, level: st
     # attach view (close only)
     view = ListingView(listing_id=listing_id, section=LM_SEC_LIX, author_id=inter.user.id, taking_offers=False, thread_id=None)
     try:
-        await safe_edit(msg, view=view)
+        await msg.edit(view=view)
     except Exception:
         pass
 
@@ -3718,7 +3646,7 @@ async def ensure_welcome_prompt(guild: discord.Guild):
         try:
             msg = await ch.fetch_message(msg_id)
             try:
-                await safe_edit(msg, content=content, view=view)
+                await msg.edit(content=content, view=view)
                 return
             except Exception:
                 pass
@@ -4580,7 +4508,7 @@ async def _roster_edit_or_post(guild: discord.Guild, member: discord.Member, row
     if roster_msg_id:
         try:
             msg = await ch.fetch_message(int(roster_msg_id))
-            await safe_edit(msg, embed=e)
+            await msg.edit(embed=e)
             return msg
         except Exception:
             pass
@@ -5570,12 +5498,7 @@ async def _build_timer_embeds_count_missing_only(guild: dm.Guild, categories: Li
                     missing_count += 1
                     continue
                 win_status = window_label(now, tts, win)
-                try:
-                    _ws = str(win_status)
-                except Exception:
-                    _ws = ""
-                _inc = (bool(_ws) and ("pending" not in _ws.lower()))
-                seg = (f"• **{nm}** `{t}`" + (f" · {_ws}" if _inc else ""))
+                seg = f"• **{nm}** `{t}` · {win_status}"
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
                     seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
