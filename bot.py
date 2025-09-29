@@ -386,6 +386,73 @@ def category_emoji(c: str) -> str:
         emo = "📄"
     return emo
 
+# --- Patch B: Emoji validation and Unicode fallback ---
+CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w+:(\d+)>$")
+
+def resolve_reaction_emoji(e, guild):
+    """
+    Return a Discord-ready emoji object or a safe Unicode fallback.
+    Error checks:
+      1) Guard non-string inputs.
+      2) Validate custom emoji is present in guild by ID.
+      3) Bound length for unicode to avoid weird long strings.
+    """
+    try:
+        s = str(e).strip()
+    except Exception:
+        return "⭐"
+    m = CUSTOM_EMOJI_RE.match(s)
+    if m:
+        try:
+            eid = int(m.group(1))
+        except Exception:
+            return "⭐"
+        emo_obj = guild.get_emoji(eid) if guild else None
+        return emo_obj if emo_obj else "⭐"
+    # unicode path
+    try:
+        s = s[:8]
+        if not s:
+            return "⭐"
+        # basic sanity: no control chars
+        if any(ord(ch) < 32 for ch in s):
+            return "⭐"
+        return s
+    except Exception:
+        return "⭐"
+
+async def normalize_emoji_map_for_guild(guild):
+    """
+    Ensure DB-stored emojis for panels are valid in this guild.
+    Rewrites missing/invalid custom emoji to '⭐' to prevent Unknown Emoji errors.
+    Error checks:
+      - Guards DB access errors.
+      - Skips on empty mapping.
+      - Commits only when a change is detected.
+    """
+    if not guild:
+        return
+    try:
+        import aiosqlite
+        from contextlib import asynccontextmanager
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            c = await db.execute("SELECT boss_id,emoji FROM subscription_emojis WHERE guild_id=?", (guild.id,))
+            rows = await c.fetchall()
+            changed = 0
+            for bid, e in rows:
+                safe = resolve_reaction_emoji(e, guild)
+                # Store STRING form for both unicode and custom
+                safe_str = str(safe)
+                if safe_str != str(e):
+                    await db.execute("UPDATE subscription_emojis SET emoji=? WHERE guild_id=? AND boss_id=?", (safe_str, guild.id, int(bid)))
+                    changed += 1
+            if changed:
+                await db.commit()
+    except Exception as _e:
+        log.warning(f"[emoji-normalize] failed for g{guild.id if guild else 'NA'}: {_e}")
+# --- End Patch B helpers ---
+
 DEFAULT_COLORS = {
     "Warden": 0x2ecc71, "Meteoric": 0xe67e22, "Frozen": 0x3498db,
     "DL": 0xe74c3c, "EDL": 0x8e44ad, "Midraids": 0x34495e,
@@ -783,7 +850,7 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     lines = []
     per_message_emojis = []
     for bid, name, _sk in rows:
-        e = emoji_map.get(bid, "â­")
+        e = emoji_map.get(bid, "⭐")
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
@@ -821,6 +888,9 @@ async def refresh_subscription_messages(guild: discord.Guild):
     if not sub_ch_id:
         return
     channel = guild.get_channel(sub_ch_id)
+
+    # Patch B: normalize emoji mapping for this guild
+    await normalize_emoji_map_for_guild(guild)
     if not can_send(channel):
         return
     async with aiosqlite.connect(DB_PATH) as db:
@@ -866,14 +936,31 @@ async def refresh_subscription_messages(guild: discord.Guild):
             except Exception as e:
                 log.warning(f"Subscription panel ({cat}) create failed: {e}")
                 continue
+        
         if can_react(channel) and message:
             try:
+                # Existing reactions on the message
                 existing = set(str(r.emoji) for r in message.reactions)
-                for e in [e for e in emojis if e not in existing]:
-                    await message.add_reaction(e)
-                    await asyncio.sleep(0.2)
+                # Resolve each planned emoji to a safe guild-valid value
+                resolved = []
+                for raw in emojis:
+                    try:
+                        val = resolve_reaction_emoji(raw, guild)
+                        key = str(val)
+                        if key in existing or key in (str(x) for x in resolved):
+                            continue
+                        resolved.append(val)
+                    except Exception:
+                        continue
+                for val in resolved:
+                    try:
+                        await message.add_reaction(val)
+                        await asyncio.sleep(0.2)
+                    except Exception as e:
+                        log.warning(f"Adding reactions failed for {cat}: {e}")
             except Exception as e:
                 log.warning(f"Adding reactions failed for {cat}: {e}")
+
 
 # -------------------- SUBSCRIPTION PINGS (separate channel supported) --------------------
 async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_name: str, when_left: Optional[int] = None):
