@@ -1,8 +1,7 @@
-
-# --- Global sanitization helpers and monkeypatch ---
+fr
+# ---- Sanitization & Emoji helpers ----
 def _clean_text(s):
-    """
-    Clean string from mojibake and control chars.
+    """Return Unicode-clean text without mojibake or control chars.
     Error checks: non-string passthrough; latin1→utf8 fallback; control removal.
     """
     if not isinstance(s, str):
@@ -26,7 +25,36 @@ def _clean_text(s):
         pass
     return out
 
+SAFE_UNICODE_POOL = [
+    "⭐","🔥","⚔️","🛡️","🐉","💀","🏹","🧙‍♂️","🧙‍♀️","🧊",
+    "☄️","💍","📯","🎯","🗡️","🧪","🏆","🔱","🪓","🧭",
+    "🗺️","🕯️","⚖️","🪄","📜","🪶","🐺","🦅","🦂","🐍",
+    "👑","🔮","⛏️","💎","🧬","⚗️","🎣","🕰️","🧱","🪨"
+]
+import hashlib as _hashlib
+def stable_unicode_emoji(bid, name) -> str:
+    """Deterministic Unicode-only emoji from pool.
+    Error checks: fallback on encode errors; validate result; ⭐ default.
+    """
+    try:
+        key = f"{int(bid)}:{str(name)}".encode("utf-8", "ignore")
+    except Exception:
+        try:
+            key = f"{int(bid)}".encode("utf-8", "ignore")
+        except Exception:
+            key = b"0"
+    pool = SAFE_UNICODE_POOL or ["⭐"]
+    idx = int.from_bytes(_hashlib.sha256(key).digest()[:4], "big") % len(pool)
+    e = pool[idx]
+    try:
+        if not isinstance(e, str) or not e or any(ord(ch) < 32 for ch in e) or len(e) > 6:
+            return "⭐"
+    except Exception:
+        return "⭐"
+    return e
+
 def _sanitize_embed(embed):
+    """Clean discord.Embed text fields."""
     try:
         from discord import Embed
     except Exception:
@@ -46,6 +74,7 @@ def _sanitize_embed(embed):
         return embed
 
 def _sanitize_view(view):
+    """Clean labels/placeholders/options on a discord.ui.View."""
     try:
         from discord.ui import Select
     except Exception:
@@ -75,44 +104,22 @@ def _sanitize_view(view):
     except Exception:
         return view
 
-def _fix_emoji(e):
-    "Return safe Unicode emoji; reject custom markup and mojibake."
-    try:
-        s = str(e).strip()
-    except Exception:
-        return "⭐"
-    if "<" in s or ">" in s:  # custom <:name:id>
-        return "⭐"
-    if ("Ã" in s) or ("â" in s) or ("ðŸ" in s):
-        try:
-            s2 = s.encode("latin1","ignore").decode("utf-8","ignore")
-            if s2:
-                s = s2
-        except Exception:
-            return "⭐"
-    if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
-        return "⭐"
-    return s
-
 _SEND_PATCHED = False
 def _install_sanitizers():
-    "Monkeypatch discord send/edit to sanitize kwargs. Idempotent."
+    """Monkeypatch Messageable.send and Message.edit to sanitize kwargs. Idempotent."""
     global _SEND_PATCHED
     if _SEND_PATCHED:
         return
     try:
-        import discord
         from discord.abc import Messageable
         from discord import Message
     except Exception:
         return
     try:
         async def _sanitized_send(self, *args, **kwargs):
-            # Error check 1: sanitize content
             c = kwargs.get("content", None)
             if c is not None:
                 kwargs["content"] = _clean_text(c)
-            # Error check 2: sanitize embeds/embed
             if "embed" in kwargs and kwargs["embed"] is not None:
                 kwargs["embed"] = _sanitize_embed(kwargs["embed"])
             if "embeds" in kwargs and kwargs["embeds"]:
@@ -120,7 +127,6 @@ def _install_sanitizers():
                     kwargs["embeds"] = [_sanitize_embed(e) for e in kwargs["embeds"]]
                 except Exception:
                     pass
-            # Error check 3: sanitize view labels
             if "view" in kwargs and kwargs["view"] is not None:
                 kwargs["view"] = _sanitize_view(kwargs["view"])
             return await _orig_send(self, *args, **kwargs)
@@ -140,7 +146,6 @@ def _install_sanitizers():
                 kwargs["view"] = _sanitize_view(kwargs["view"])
             return await _orig_edit(self, *args, **kwargs)
 
-        # Bind originals then patch
         _orig_send = Messageable.send
         _orig_edit = Message.edit
         Messageable.send = _sanitized_send
@@ -148,7 +153,7 @@ def _install_sanitizers():
         _SEND_PATCHED = True
     except Exception:
         pass
-# --- End global sanitization ---
+om __future__ import annotations
 
 # -------------------- Celtic Heroes Boss Tracker — Foundations (Part 1/4) --------------------
 # Features in this part:
@@ -162,7 +167,6 @@ def _install_sanitizers():
 # - Subscription panels: emoji mapping + builders + refresh cycle
 # - Subscription ping helper (separate designated channel supported)
 
-from __future__ import annotations
 # --- Emoji constants and safe send helper (mojibake fix) ---
 EMJ_HOURGLASS = "⏳"
 EMJ_CLOCK = "🕓"
@@ -857,11 +861,11 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     lines = []
     per_message_emojis = []
     for bid, name, _sk in rows:
-        e = _fix_emoji(emoji_map.get(bid, "⭐"))
+        e = stable_unicode_emoji(bid, name)
         if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
-        lines.append(f"{_fix_emoji(e)} — **{_clean_text(name)}**")
+        lines.append(f"{e} — **{_clean_text(name)}**")
     bucket = ""; fields: List[str] = []
     for line in lines:
         if len(bucket) + len(line) + 1 > 1000:
