@@ -812,31 +812,31 @@ async def refresh_subscription_messages(guild: discord.Guild):
                 log.warning(f"Subscription panel ({cat}) create failed: {e}")
                 continue
         
-if can_react(channel) and message:
-    # Patch B.4: strict unicode-only reactions to avoid 10014
-    try:
-        planned = list(emojis)
-    except Exception:
-        planned = []
-    try:
-        existing = set(str(r.emoji) for r in getattr(message, "reactions", []))
-    except Exception:
-        existing = set()
-    resolved = []
-    seen = set(existing)
-    for raw in planned:
-        safe_e = _to_safe_unicode_emoji(guild, raw)
-        key = str(safe_e)
-        if not key or key in seen:
-            continue
-        resolved.append(safe_e)
-        seen.add(key)
-    for safe_e in resolved:
-        try:
-            await message.add_reaction(safe_e)
-            await asyncio.sleep(0.2)
-        except Exception as e:
-            log.warning(f"Adding reactions failed for {cat}: {e}")
+        if can_react(channel) and message:
+            # Patch B.4: strict unicode-only reactions to avoid 10014
+            try:
+                planned = list(emojis)
+            except Exception:
+                planned = []
+            try:
+                existing = set(str(r.emoji) for r in getattr(message, "reactions", []))
+            except Exception:
+                existing = set()
+            resolved = []
+            seen = set(existing)
+            for raw in planned:
+                safe_e = _to_safe_unicode_emoji(guild, raw)
+                key = str(safe_e)
+                if not key or key in seen:
+                    continue
+                resolved.append(safe_e)
+                seen.add(key)
+            for safe_e in resolved:
+                try:
+                    await message.add_reaction(safe_e)
+                    await asyncio.sleep(0.2)
+                except Exception as e:
+                    log.warning(f"Adding reactions failed for {cat}: {e}")
 # -------------------- SUBSCRIPTION PINGS (separate channel supported) --------------------
 async def send_subscription_ping(guild_id: int, boss_id: int, phase: str, boss_name: str, when_left: Optional[int] = None):
     async with aiosqlite.connect(DB_PATH) as db:
