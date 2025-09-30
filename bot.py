@@ -1657,23 +1657,6 @@ class ToggleButton(discord.ui.Button):
         else:
             ordered = [c for c in CATEGORY_ORDER if c in (view.shown + [self.cat])]
             view.shown = ordered
-        # persist toggle immediate + mirror select defaults
-        try:
-            _gid = getattr(view.guild, 'id', None)
-            _uid = getattr(view, 'user_id', None)
-            if _gid and _uid:
-                _vals = [c for c in (view.shown or []) if c in CATEGORY_ORDER]
-                await set_user_shown_categories(_gid, _uid, _vals)
-            for _it in (getattr(view, 'children', None) or []):
-                _opts = getattr(_it, 'options', None)
-                if _opts:
-                    for _opt in _opts:
-                        try:
-                            _opt.default = (_opt.value in view.shown)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
         await view.refresh(interaction)
 
 class ControlButton(discord.ui.Button):
@@ -1687,23 +1670,6 @@ class ControlButton(discord.ui.Button):
             view.shown = [c for c in CATEGORY_ORDER]
         else:
             view.shown = []
-        # persist control immediate + mirror select defaults
-        try:
-            _gid = getattr(view.guild, 'id', None)
-            _uid = getattr(view, 'user_id', None)
-            if _gid and _uid:
-                _vals = [c for c in (view.shown or []) if c in CATEGORY_ORDER]
-                await set_user_shown_categories(_gid, _uid, _vals)
-            for _it in (getattr(view, 'children', None) or []):
-                _opts = getattr(_it, 'options', None)
-                if _opts:
-                    for _opt in _opts:
-                        try:
-                            _opt.default = (_opt.value in view.shown)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
         await view.refresh(interaction)
 
 async def build_timer_embeds_for_categories(guild: discord.Guild, categories: List[str]) -> List[discord.Embed]:
@@ -5253,21 +5219,6 @@ try:
                 )
             async def callback(self, interaction: dm.Interaction):
                 self.parent_view.shown = list(self.values)
-                # persist mobile-select immediate + update defaults
-                try:
-                    _view = self.parent_view
-                    _gid = getattr(getattr(_view, 'guild', None), 'id', None)
-                    _uid = getattr(_view, 'user_id', None)
-                    if _gid and _uid:
-                        _vals = [c for c in (_view.shown or []) if c in CATEGORY_ORDER]
-                        await set_user_shown_categories(_gid, _uid, _vals)
-                    for _opt in (getattr(self, 'options', None) or []):
-                        try:
-                            _opt.default = (_opt.value in _view.shown)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
                 await self.parent_view.refresh(interaction)
 
         # Replace TimerToggleView.__init__ to use the new select
@@ -5700,3 +5651,52 @@ except Exception:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+# ==================== TIMER SELECT REBUILD PATCH ====================
+# Rebuild the category Select on every refresh so the visible defaults match the latest selection.
+try:
+    import discord as dm
+    if 'TimerToggleView' in globals() and 'MobileCategorySelect' in globals():
+        if not hasattr(TimerToggleView, 'rebuild_select'):
+            def rebuild_select(self):
+                try:
+                    # remove any existing Select children
+                    try:
+                        from discord.ui import Select as _Select
+                    except Exception:
+                        _Select = None
+                    for ch in list(getattr(self, 'children', []) or []):
+                        try:
+                            if (_Select and isinstance(ch, _Select)) or isinstance(ch, dm.ui.Select):
+                                self.remove_item(ch)
+                        except Exception:
+                            continue
+                    # add a fresh Select with defaults set from self.shown
+                    self.add_item(MobileCategorySelect(self))
+                except Exception:
+                    pass
+            TimerToggleView.rebuild_select = rebuild_select  # type: ignore
+
+        # Wrap refresh to persist + rebuild the Select before rendering
+        if callable(getattr(TimerToggleView, 'refresh', None)):
+            _orig_refresh = TimerToggleView.refresh
+            async def _refresh_with_rebuild(self, interaction: dm.Interaction):  # type: ignore
+                try:
+                    _gid = getattr(getattr(self, 'guild', None), 'id', None)
+                    _uid = getattr(self, 'user_id', None)
+                    if _gid and _uid:
+                        _vals = [c for c in (getattr(self, 'shown', []) or []) if c in CATEGORY_ORDER]
+                        await set_user_shown_categories(_gid, _uid, _vals)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, 'rebuild_select'):
+                        self.rebuild_select()
+                except Exception:
+                    pass
+                await _orig_refresh(self, interaction)
+            TimerToggleView.refresh = _refresh_with_rebuild  # type: ignore
+except Exception:
+    pass
+# ================== END TIMER SELECT REBUILD PATCH ==================
