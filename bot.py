@@ -1644,27 +1644,23 @@ class TimerToggleView(discord.ui.View):
             await interaction.edit_original_response(content=content, embeds=embeds, view=self)
         else:
             await interaction.response.edit_message(content=content, embeds=embeds, view=self)
-                # Ensure defaults reflect persisted prefs
-                try:
-                    uid = getattr(interaction.user, 'id', None)
-                    if uid is not None and hasattr(self, 'load_user_timer_prefs'):
-                        prefs = await self.load_user_timer_prefs(uid)
-                        self.current_categories = list(prefs or [])
-                    # If select components exist, set option.default using current_categories
-                    for item in list(getattr(self, 'children', []) or []):
-                        try:
-                            from discord.ui import Select as _Select
-                            if isinstance(item, _Select):
-                                for _opt in getattr(item, 'options', []) or []:
-                                    _val = getattr(_opt, 'value', None)
-                                    _opt.default = (_val in getattr(self, 'current_categories', []))
-                        except Exception:
-                            continue
-                except Exception as e:
-                    import logging
-                    logging.exception("refresh default sync failed: %s", e)
-    
 
+        try:
+            # Sync defaults to persisted prefs
+            uid = getattr(getattr(interaction, 'user', None), 'id', None)
+            if uid is not None and hasattr(self, 'load_user_timer_prefs'):
+                prefs = await self.load_user_timer_prefs(uid)
+                self.current_categories = list(prefs or [])
+            for item in list(getattr(self, 'children', []) or []):
+                try:
+                    from discord.ui import Select as _Select
+                    if isinstance(item, _Select):
+                        await _sync_select_defaults_inplace(item, self, getattr(self, 'current_categories', []))
+                except Exception:
+                    pass
+        except Exception:
+            import logging as _logging
+            _logging.exception('refresh: default sync failed')
 class ToggleButton(discord.ui.Button):
     def __init__(self, label: str, style: discord.ButtonStyle, cat: str, row: int):
         super().__init__(label=label, style=style, row=row)
@@ -3606,41 +3602,8 @@ class AltClassSelect(discord.ui.Select):
         self.view.selected_alt_class = self.values[0]
         await interaction.response.edit_message(content=self.view._summary_text(), view=self.view)
 
+        await _sync_select_defaults_inplace(self, getattr(self, 'view', None), list(getattr(self, 'values', [])))
 # Optional alt modal (name + level only; class comes from dropdown)
-                # --- live default sync + guards ---
-                try:
-                    view = getattr(self, 'view', None)
-                    if view is None:
-                        await interaction.response.send_message("View missing. Reopen /timers.", ephemeral=True)
-                        return
-                    # Determine current selection values
-                    selected_values = []
-                    try:
-                        # discord.py exposes selected values via self.values inside callback
-                        selected_values = list(getattr(self, 'values', [])) or []
-                    except Exception:
-                        pass
-                    # Fallback: read from a persisted attribute on view if present
-                    if not selected_values:
-                        selected_values = list(getattr(view, 'current_categories', [])) or []
-                    # Sanitize against known categories if available
-                    known = set(getattr(view, 'all_categories', [])) if hasattr(view, 'all_categories') else set()
-                    if known:
-                        selected_values = [v for v in selected_values if v in known]
-                    # Apply defaults on the fly so the same menu reflects the new state
-                    try:
-                        for _opt in getattr(self, 'options', []) or []:
-                            _val = getattr(_opt, 'value', None)
-                            if _val is not None:
-                                _opt.default = (_val in selected_values)
-                    except Exception as _e:
-                        import logging as _logging
-                        _logging.exception("select-default-sync failed: %s", _e)
-                except Exception as e:
-                    import logging
-                    logging.exception("timer select guard failed: %s", e)
-                # --- end live default sync ---
-    
 class AltModal(discord.ui.Modal, title="Add Alt (optional)"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
     alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
@@ -3997,41 +3960,8 @@ class ClassSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         self.view.selected_class = self.values[0]
         await interaction.response.edit_message(content=f"Selected class: **{self.view.selected_class}**", view=self.view)
-                # --- live default sync + guards ---
-                try:
-                    view = getattr(self, 'view', None)
-                    if view is None:
-                        await interaction.response.send_message("View missing. Reopen /timers.", ephemeral=True)
-                        return
-                    # Determine current selection values
-                    selected_values = []
-                    try:
-                        # discord.py exposes selected values via self.values inside callback
-                        selected_values = list(getattr(self, 'values', [])) or []
-                    except Exception:
-                        pass
-                    # Fallback: read from a persisted attribute on view if present
-                    if not selected_values:
-                        selected_values = list(getattr(view, 'current_categories', [])) or []
-                    # Sanitize against known categories if available
-                    known = set(getattr(view, 'all_categories', [])) if hasattr(view, 'all_categories') else set()
-                    if known:
-                        selected_values = [v for v in selected_values if v in known]
-                    # Apply defaults on the fly so the same menu reflects the new state
-                    try:
-                        for _opt in getattr(self, 'options', []) or []:
-                            _val = getattr(_opt, 'value', None)
-                            if _val is not None:
-                                _opt.default = (_val in selected_values)
-                    except Exception as _e:
-                        import logging as _logging
-                        _logging.exception("select-default-sync failed: %s", _e)
-                except Exception as e:
-                    import logging
-                    logging.exception("timer select guard failed: %s", e)
-                # --- end live default sync ---
-    
 
+        await _sync_select_defaults_inplace(self, getattr(self, 'view', None), list(getattr(self, 'values', [])))
 class RosterStartView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=600)
@@ -4127,41 +4057,8 @@ class AltClassSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         self.view.selected_alt_class = self.values[0]
         await interaction.response.edit_message(content=self.view._summary_text(), view=self.view)
-                # --- live default sync + guards ---
-                try:
-                    view = getattr(self, 'view', None)
-                    if view is None:
-                        await interaction.response.send_message("View missing. Reopen /timers.", ephemeral=True)
-                        return
-                    # Determine current selection values
-                    selected_values = []
-                    try:
-                        # discord.py exposes selected values via self.values inside callback
-                        selected_values = list(getattr(self, 'values', [])) or []
-                    except Exception:
-                        pass
-                    # Fallback: read from a persisted attribute on view if present
-                    if not selected_values:
-                        selected_values = list(getattr(view, 'current_categories', [])) or []
-                    # Sanitize against known categories if available
-                    known = set(getattr(view, 'all_categories', [])) if hasattr(view, 'all_categories') else set()
-                    if known:
-                        selected_values = [v for v in selected_values if v in known]
-                    # Apply defaults on the fly so the same menu reflects the new state
-                    try:
-                        for _opt in getattr(self, 'options', []) or []:
-                            _val = getattr(_opt, 'value', None)
-                            if _val is not None:
-                                _opt.default = (_val in selected_values)
-                    except Exception as _e:
-                        import logging as _logging
-                        _logging.exception("select-default-sync failed: %s", _e)
-                except Exception as e:
-                    import logging
-                    logging.exception("timer select guard failed: %s", e)
-                # --- end live default sync ---
-    
 
+        await _sync_select_defaults_inplace(self, getattr(self, 'view', None), list(getattr(self, 'values', [])))
 class AltModal(discord.ui.Modal, title="Add Alt"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
     alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
