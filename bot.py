@@ -1645,22 +1645,6 @@ class TimerToggleView(discord.ui.View):
         else:
             await interaction.response.edit_message(content=content, embeds=embeds, view=self)
 
-        try:
-            # Sync defaults to persisted prefs
-            uid = getattr(getattr(interaction, 'user', None), 'id', None)
-            if uid is not None and hasattr(self, 'load_user_timer_prefs'):
-                prefs = await self.load_user_timer_prefs(uid)
-                self.current_categories = list(prefs or [])
-            for item in list(getattr(self, 'children', []) or []):
-                try:
-                    from discord.ui import Select as _Select
-                    if isinstance(item, _Select):
-                        await _sync_select_defaults_inplace(item, self, getattr(self, 'current_categories', []))
-                except Exception:
-                    pass
-        except Exception:
-            import logging as _logging
-            _logging.exception('refresh: default sync failed')
 class ToggleButton(discord.ui.Button):
     def __init__(self, label: str, style: discord.ButtonStyle, cat: str, row: int):
         super().__init__(label=label, style=style, row=row)
@@ -3602,7 +3586,6 @@ class AltClassSelect(discord.ui.Select):
         self.view.selected_alt_class = self.values[0]
         await interaction.response.edit_message(content=self.view._summary_text(), view=self.view)
 
-        await _sync_select_defaults_inplace(self, getattr(self, 'view', None), list(getattr(self, 'values', [])))
 # Optional alt modal (name + level only; class comes from dropdown)
 class AltModal(discord.ui.Modal, title="Add Alt (optional)"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
@@ -3961,7 +3944,6 @@ class ClassSelect(discord.ui.Select):
         self.view.selected_class = self.values[0]
         await interaction.response.edit_message(content=f"Selected class: **{self.view.selected_class}**", view=self.view)
 
-        await _sync_select_defaults_inplace(self, getattr(self, 'view', None), list(getattr(self, 'values', [])))
 class RosterStartView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=600)
@@ -4058,7 +4040,6 @@ class AltClassSelect(discord.ui.Select):
         self.view.selected_alt_class = self.values[0]
         await interaction.response.edit_message(content=self.view._summary_text(), view=self.view)
 
-        await _sync_select_defaults_inplace(self, getattr(self, 'view', None), list(getattr(self, 'values', [])))
 class AltModal(discord.ui.Modal, title="Add Alt"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
     alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
