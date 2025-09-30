@@ -11,52 +11,6 @@
 # - Subscription ping helper (separate designated channel supported)
 
 from __future__ import annotations
-
-# --- Panel sanitizers (names + emojis) ---
-_MOJIBAKE_HINTS = ("Ã", "â", "ðŸ")
-def _fix_name(s):
-    if not isinstance(s, str):
-        return s
-    out = s
-    if any(h in out for h in _MOJIBAKE_HINTS):
-        try:
-            cand = out.encode("latin1", "ignore").decode("utf-8", "ignore")
-            if cand:
-                out = cand
-        except Exception:
-            out = (out.replace("â€™","’").replace("â€œ","“").replace("â€\x9d","”").replace("â€“","–").replace("â€”","—"))
-    try:
-        if any(ord(ch) < 32 for ch in out):
-            out = "".join(ch for ch in out if ord(ch) >= 32)
-    except Exception:
-        pass
-    return out
-
-def _norm_key(s: str) -> str:
-    try:
-        return "".join(ch for ch in s.lower() if ch.isalnum())
-    except Exception:
-        return ""
-
-def _safe_unicode_emoji(e) -> str:
-    try:
-        s = str(e).strip()
-    except Exception:
-        return "⭐"
-    if "<" in s or ">" in s:
-        return "⭐"
-    if any(h in s for h in _MOJIBAKE_HINTS):
-        try:
-            s2 = s.encode("latin1","ignore").decode("utf-8","ignore")
-            if s2:
-                s = s2
-        except Exception:
-            return "⭐"
-    if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
-        return "⭐"
-    return s
-# --- End sanitizers ---
-
 # --- Emoji constants and safe send helper (mojibake fix) ---
 EMJ_HOURGLASS = "⏳"
 EMJ_CLOCK = "🕓"
@@ -254,7 +208,7 @@ async def safe_edit(message, /, **kwargs):
             return False  # too soon; next tick will try again
 
     try:
-        await message.edit(**kwargs)
+        await safe_edit(message, **kwargs)
         _EDIT_STATE[message.id] = (digest, now)
         return True
     except HTTPException as e:
@@ -828,20 +782,12 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     )
     lines = []
     per_message_emojis = []
-    seen_names = set()
     for bid, name, _sk in rows:
-        nm = _fix_name(name)
-        key = _norm_key(nm)
-        if key in seen_names:
-            continue
-        seen_names.add(key)
-        e = _safe_unicode_emoji(emoji_map.get(bid, "⭐"))
-        if key == "cromsmanikin":
-            e = "☄️"
-        if e in per_message_emojis or not e:  # avoid dup reactions and blanks
+        e = emoji_map.get(bid, "â­")
+        if e in per_message_emojis:  # avoid dup reactions in one message
             continue
         per_message_emojis.append(e)
-        lines.append(f"{e} — **{nm}**")
+        lines.append(f"{e} — **{name}**")
     bucket = ""; fields: List[str] = []
     for line in lines:
         if len(bucket) + len(line) + 1 > 1000:
@@ -923,12 +869,7 @@ async def refresh_subscription_messages(guild: discord.Guild):
         if can_react(channel) and message:
             try:
                 existing = set(str(r.emoji) for r in message.reactions)
-                cleaned = []
-                for raw in emojis:
-                    e = _safe_unicode_emoji(raw)
-                    if e and e not in existing and e not in cleaned:
-                        cleaned.append(e)
-                for e in cleaned:
+                for e in [e for e in emojis if e not in existing]:
                     await message.add_reaction(e)
                     await asyncio.sleep(0.2)
             except Exception as e:
@@ -1331,6 +1272,10 @@ async def on_guild_join(guild: discord.Guild):
     except Exception:
         pass
     try:
+        await refresh_subscription_messages(guild)
+    except Exception:
+        pass
+    try:
         await bot.tree.sync(guild=guild)
     except Exception:
         pass
@@ -1617,9 +1562,13 @@ class TimerToggleView(discord.ui.View):
         self.add_item(self._make_all_button())
         self.add_item(self._make_none_button())
         self.message = None
+        try:
+            self.update_button_styles()
+        except Exception:
+            pass
 
     def _make_toggle_button(self, cat: str, idx: int):
-        return ToggleButton(label=cat, style=discord.ButtonStyle.primary, cat=cat, row=min(4, idx // 3))
+        return ToggleButton(label=cat, style=(discord.ButtonStyle.success if cat in self.shown else discord.ButtonStyle.secondary), cat=cat, row=min(4, idx // 3))
 
     def _make_all_button(self):
         return ControlButton(label="Show All", style=discord.ButtonStyle.success, action="all", row=4)
@@ -1633,10 +1582,40 @@ class TimerToggleView(discord.ui.View):
             return False
         return True
 
+
+def update_button_styles(self):
+    """Update each category button's style/emoji based on current `shown`.
+    Guards:
+      1) Skip non-buttons.
+      2) Guard missing attributes.
+      3) Ignore enum errors.
+    """
+    children = getattr(self, "children", None)
+    if not children:
+        return
+    for child in list(children):
+        try:
+            if not isinstance(child, discord.ui.Button):
+                continue
+            cat = getattr(child, "cat", None)
+            if not isinstance(cat, str):
+                continue
+            if cat in self.shown:
+                child.style = discord.ButtonStyle.success
+                child.emoji = "✅"
+            else:
+                child.style = discord.ButtonStyle.secondary
+                child.emoji = None
+        except Exception:
+            continue
     async def persist(self):
         await set_user_shown_categories(self.guild.id, self.user_id, self.shown)
 
     async def refresh(self, interaction: discord.Interaction):
+        try:
+            self.update_button_styles()
+        except Exception:
+            pass
         embeds = await build_timer_embeds_for_categories(self.guild, self.shown)
         content = f"**Categories shown:** {', '.join(self.shown) if self.shown else '(none)'}"
         await self.persist()
@@ -1657,6 +1636,10 @@ class ToggleButton(discord.ui.Button):
         else:
             ordered = [c for c in CATEGORY_ORDER if c in (view.shown + [self.cat])]
             view.shown = ordered
+        try:
+            view.update_button_styles()
+        except Exception:
+            pass
         await view.refresh(interaction)
 
 class ControlButton(discord.ui.Button):
