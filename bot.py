@@ -1657,6 +1657,19 @@ class ToggleButton(discord.ui.Button):
         else:
             ordered = [c for c in CATEGORY_ORDER if c in (view.shown + [self.cat])]
             view.shown = ordered
+        # immediate persist with three guards
+        try:
+            _gid = getattr(view.guild, 'id', None)
+            _uid = getattr(view, 'user_id', None)
+            if _gid and _uid:
+                _known = list(CATEGORY_ORDER)
+                _vals = [c for c in (view.shown or []) if c in _known]
+                await set_user_shown_categories(_gid, _uid, _vals)
+        except Exception as _e:
+            try:
+                log.exception("persist toggle failed", exc_info=_e)  # type: ignore
+            except Exception:
+                pass
         await view.refresh(interaction)
 
 class ControlButton(discord.ui.Button):
