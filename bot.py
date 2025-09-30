@@ -5651,3 +5651,122 @@ except Exception:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+# ==================== TIMER LIVE-SELECTION PERSISTENCE PATCH (2025-09-29) ====================
+# Purpose: Ensure the /timers category selections persist immediately and the select menu defaults
+# reflect the latest state without needing to dismiss the message.
+try:
+    import discord as _dm_fix
+    from typing import List as _List
+    _HAS_DM = True
+except Exception:
+    _HAS_DM = False
+
+if _HAS_DM and 'TimerToggleView' in globals():
+    # 1) Wrap TimerToggleView.refresh to also sync select option defaults and add guards.
+    try:
+        async def __ttv_refresh_live(self, interaction: _dm_fix.Interaction):
+            # Error check 1: guard guild presence
+            gid = getattr(getattr(interaction, 'guild', None), 'id', None)
+            if gid is None:
+                try:
+                    if 'log' in globals(): log.warning("[timers] refresh called without guild")
+                except Exception:
+                    pass
+                # Try a safe ephemeral notify
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("Use this in a server.", ephemeral=True)
+                except Exception:
+                    pass
+                return
+            # Sanitize shown against CATEGORY_ORDER (Error check 2)
+            try:
+                self.shown = [c for c in CATEGORY_ORDER if c in (self.shown or [])]
+            except Exception as e:
+                try:
+                    if 'log' in globals(): log.warning(f"[timers] sanitize shown failed: {e}")
+                except Exception:
+                    pass
+            # Persist selection with guard (Error check 3)
+            try:
+                await set_user_shown_categories(gid, self.user_id, self.shown)
+            except Exception as e:
+                try:
+                    if 'log' in globals(): log.warning(f"[timers] persist shown failed: {e}")
+                except Exception:
+                    pass
+            # Sync any Select defaults to reflect current shown
+            try:
+                for child in getattr(self, 'children', []):
+                    if isinstance(child, _dm_fix.ui.Select):
+                        for opt in getattr(child, 'options', []) or []:
+                            try:
+                                opt.default = (opt.value in self.shown)
+                            except Exception:
+                                # ignore per-option errors
+                                pass
+            except Exception as e:
+                try:
+                    if 'log' in globals(): log.warning(f"[timers] sync defaults failed: {e}")
+                except Exception:
+                    pass
+            # Build embeds and edit in-place
+            embeds = await build_timer_embeds_for_categories(self.guild, self.shown)
+            content = f"**Categories shown:** {', '.join(self.shown) if self.shown else '(none)'}"
+            try:
+                if interaction.response.is_done():
+                    await interaction.edit_original_response(content=content, embeds=embeds, view=self)
+                else:
+                    await interaction.response.edit_message(content=content, embeds=embeds, view=self)
+            except Exception as e:
+                try:
+                    if 'log' in globals(): log.warning(f"[timers] edit failed: {e}")
+                except Exception:
+                    pass
+        # Bind override
+        TimerToggleView.refresh = __ttv_refresh_live  # type: ignore
+    except Exception as _e_ttv_refresh:
+        try:
+            if 'log' in globals(): log.warning(f"[timers] live refresh hook failed: {_e_ttv_refresh}")
+        except Exception:
+            pass
+
+    # 2) If a MobileCategorySelect exists, upgrade its callback to filter values, persist, and resync defaults.
+    try:
+        # Find the existing class in globals if present
+        _mcs = globals().get('MobileCategorySelect', None)
+        if _mcs is not None and isinstance(_mcs, type):
+            _orig_cb = getattr(_mcs, 'callback', None)
+            async def _mcs_callback_live(self, interaction: _dm_fix.Interaction):
+                # Filter incoming values to known categories
+                vals = [v for v in getattr(self, 'values', []) if v in CATEGORY_ORDER]
+                self.parent_view.shown = [c for c in CATEGORY_ORDER if c in vals]
+                # Persist with guard
+                try:
+                    gid = interaction.guild.id
+                    await set_user_shown_categories(gid, interaction.user.id, self.parent_view.shown)
+                except Exception as e:
+                    try:
+                        if 'log' in globals(): log.warning(f"[timers] select persist failed: {e}")
+                    except Exception:
+                        pass
+                # Resync defaults on the current select so reopening reflects latest
+                try:
+                    for opt in getattr(self, 'options', []) or []:
+                        try:
+                            opt.default = (opt.value in self.parent_view.shown)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                # Delegate to view refresh
+                await self.parent_view.refresh(interaction)
+            _mcs.callback = _mcs_callback_live  # type: ignore
+    except Exception as _e_mcs:
+        try:
+            if 'log' in globals(): log.warning(f"[timers] live mobile select hook failed: {_e_mcs}")
+        except Exception:
+            pass
+# ==================== END TIMER LIVE-SELECTION PERSISTENCE PATCH ====================
