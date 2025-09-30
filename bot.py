@@ -1657,19 +1657,23 @@ class ToggleButton(discord.ui.Button):
         else:
             ordered = [c for c in CATEGORY_ORDER if c in (view.shown + [self.cat])]
             view.shown = ordered
-        # immediate persist with three guards
+        # persist toggle immediate + mirror select defaults
         try:
             _gid = getattr(view.guild, 'id', None)
             _uid = getattr(view, 'user_id', None)
             if _gid and _uid:
-                _known = list(CATEGORY_ORDER)
-                _vals = [c for c in (view.shown or []) if c in _known]
+                _vals = [c for c in (view.shown or []) if c in CATEGORY_ORDER]
                 await set_user_shown_categories(_gid, _uid, _vals)
-        except Exception as _e:
-            try:
-                log.exception("persist toggle failed", exc_info=_e)  # type: ignore
-            except Exception:
-                pass
+            for _it in (getattr(view, 'children', None) or []):
+                _opts = getattr(_it, 'options', None)
+                if _opts:
+                    for _opt in _opts:
+                        try:
+                            _opt.default = (_opt.value in view.shown)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
         await view.refresh(interaction)
 
 class ControlButton(discord.ui.Button):
@@ -1683,6 +1687,23 @@ class ControlButton(discord.ui.Button):
             view.shown = [c for c in CATEGORY_ORDER]
         else:
             view.shown = []
+        # persist control immediate + mirror select defaults
+        try:
+            _gid = getattr(view.guild, 'id', None)
+            _uid = getattr(view, 'user_id', None)
+            if _gid and _uid:
+                _vals = [c for c in (view.shown or []) if c in CATEGORY_ORDER]
+                await set_user_shown_categories(_gid, _uid, _vals)
+            for _it in (getattr(view, 'children', None) or []):
+                _opts = getattr(_it, 'options', None)
+                if _opts:
+                    for _opt in _opts:
+                        try:
+                            _opt.default = (_opt.value in view.shown)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
         await view.refresh(interaction)
 
 async def build_timer_embeds_for_categories(guild: discord.Guild, categories: List[str]) -> List[discord.Embed]:
@@ -5232,6 +5253,21 @@ try:
                 )
             async def callback(self, interaction: dm.Interaction):
                 self.parent_view.shown = list(self.values)
+                # persist mobile-select immediate + update defaults
+                try:
+                    _view = self.parent_view
+                    _gid = getattr(getattr(_view, 'guild', None), 'id', None)
+                    _uid = getattr(_view, 'user_id', None)
+                    if _gid and _uid:
+                        _vals = [c for c in (_view.shown or []) if c in CATEGORY_ORDER]
+                        await set_user_shown_categories(_gid, _uid, _vals)
+                    for _opt in (getattr(self, 'options', None) or []):
+                        try:
+                            _opt.default = (_opt.value in _view.shown)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 await self.parent_view.refresh(interaction)
 
         # Replace TimerToggleView.__init__ to use the new select
