@@ -11,6 +11,52 @@
 # - Subscription ping helper (separate designated channel supported)
 
 from __future__ import annotations
+
+# --- Panel sanitizers (names + emojis) ---
+_MOJIBAKE_HINTS = ("Ã", "â", "ðŸ")
+def _fix_name(s):
+    if not isinstance(s, str):
+        return s
+    out = s
+    if any(h in out for h in _MOJIBAKE_HINTS):
+        try:
+            cand = out.encode("latin1", "ignore").decode("utf-8", "ignore")
+            if cand:
+                out = cand
+        except Exception:
+            out = (out.replace("â€™","’").replace("â€œ","“").replace("â€\x9d","”").replace("â€“","–").replace("â€”","—"))
+    try:
+        if any(ord(ch) < 32 for ch in out):
+            out = "".join(ch for ch in out if ord(ch) >= 32)
+    except Exception:
+        pass
+    return out
+
+def _norm_key(s: str) -> str:
+    try:
+        return "".join(ch for ch in s.lower() if ch.isalnum())
+    except Exception:
+        return ""
+
+def _safe_unicode_emoji(e) -> str:
+    try:
+        s = str(e).strip()
+    except Exception:
+        return "⭐"
+    if "<" in s or ">" in s:
+        return "⭐"
+    if any(h in s for h in _MOJIBAKE_HINTS):
+        try:
+            s2 = s.encode("latin1","ignore").decode("utf-8","ignore")
+            if s2:
+                s = s2
+        except Exception:
+            return "⭐"
+    if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
+        return "⭐"
+    return s
+# --- End sanitizers ---
+
 # --- Emoji constants and safe send helper (mojibake fix) ---
 EMJ_HOURGLASS = "⏳"
 EMJ_CLOCK = "🕓"
@@ -31,7 +77,7 @@ def _hide_if_pending(win_label: str, prefix: str = " · ") -> str:
 # --- UI sanitizer: fix common mojibake (UTF-8 read as Latin-1) ---
 def sanitize_ui(text: str) -> str:
     """
-    Convert mojibake like 'Ã', '', 'ðŸ' back to proper Unicode.
+    Convert mojibake like 'Ã', 'Â', 'ðŸ' back to proper Unicode.
     Error checks:
       - Only attempt if suspicious tokens present.
       - Cap output to 6000 chars to avoid Discord limits in callers.
@@ -40,7 +86,7 @@ def sanitize_ui(text: str) -> str:
     try:
         if not isinstance(text, str):
             return text
-        suspicious = ("Ã", "", "ðŸ", "•", "—", "–", "’", "“", "â€", "ã€", "")
+        suspicious = ("Ã", "Â", "ðŸ", "â€¢", "â€”", "â€“", "â€™", "â€œ", "â€", "ã€", "ï»¿")
         if any(tok in text for tok in suspicious):
             fixed = text.encode("latin-1", "ignore").decode("utf-8", "ignore")
             if fixed and (fixed.count(" ") == 0):  # avoid replacement-char mess
@@ -393,10 +439,16 @@ DEFAULT_COLORS = {
 }
 
 EMOJI_PALETTE = [
-    '⭐', '🔥', '⚔️', '🛡️', '🐉', '🐲', '💀', '🎯', '🐍', '🐺', '🦅', '🦂', '🦈', '🦖', '🧊', '☄️', '🌪️', '🌊', '🌋', '❄️', '🪄', '🔮', '💎', '🧭', '🗡️', '🏹', '🔱', '🗿', '🏆', '🎩', '📯', '🔔', '🧪', '⚗️', '🧬', '🧿', '🕯️', '📜', '🪶', '🪓', '⛏️', '🧱', '🪨', '🏹', '🗡️', '👑', '🛡️', '🔧', '🛠️', '⚙️', '🛰️', '🚀', '🛸', '🌟', '✨', '⚡', '🌈', '🎲', '🎮', '🎻', '🥁', '🎺'
+    "ðŸŸ¥","ðŸŸ§","ðŸŸ¨","ðŸŸ©","ðŸŸ¦","ðŸŸª","â¬›","â¬œ","ðŸŸ«",
+    "ðŸ”´","ðŸŸ ","ðŸŸ¡","ðŸŸ¢","ðŸ”µ","ðŸŸ£","âš«","âšª","ðŸŸ¤",
+    "â­","✨","âš¡","ðŸ”¥","âš”ï¸","ðŸ—¡ï¸","ðŸ›¡ï¸","ðŸ¹","ðŸ—¿","ðŸ§ª","ðŸ§¿","ðŸ‘‘","ðŸŽ¯","ðŸª™",
+    "ðŸ‰","ðŸ²","ðŸ”±","â˜„ï¸","ðŸ§Š","ðŸŒ‹","ðŸŒªï¸","ðŸŒŠ","ðŸŒ«ï¸","ðŸŒ©ï¸","ðŸª½","ðŸª“",
+    "0ï¸âƒ£","1ï¸âƒ£","2ï¸âƒ£","3ï¸âƒ£","4ï¸âƒ£","5ï¸âƒ£","6ï¸âƒ£","7ï¸âƒ£","8ï¸âƒ£","9ï¸âƒ£","ðŸ”Ÿ",
 ]
 EXTRA_EMOJIS = [
-    '1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '0️⃣', '✅', '❌', '➕', '➖', '⚠️', '❗', '❓', '♻️', '🔁', '🔂'
+    "â“ª","â‘ ","â‘¡","â‘¢","â‘£","â‘¤","â‘¥","â‘¦","â‘§","â‘¨","â‘©","â‘ª","â‘«","â‘¬","â‘­","â‘®","â‘¯","â‘°","â‘±","â‘²","â‘³",
+    "ðŸ…°ï¸","ðŸ…±ï¸","ðŸ†Ž","ðŸ†‘","ðŸ†’","ðŸ†“","ðŸ†”","ðŸ†•","ðŸ†–","ðŸ…¾ï¸","ðŸ†—","ðŸ…¿ï¸","ðŸ†˜","ðŸ†™","ðŸ†š",
+    "â™ˆ","â™‰","â™Š","â™‹","â™Œ","â™","â™Ž","â™","â™","â™‘","â™’","â™“",
 ]
 
 RESERVED_TRIGGERS = {
@@ -776,12 +828,20 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     )
     lines = []
     per_message_emojis = []
+    seen_names = set()
     for bid, name, _sk in rows:
-        e = emoji_map.get(bid, "⭐")
-        if e in per_message_emojis:  # avoid dup reactions in one message
+        nm = _fix_name(name)
+        key = _norm_key(nm)
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        e = _safe_unicode_emoji(emoji_map.get(bid, "⭐"))
+        if key == "cromsmanikin":
+            e = "☄️"
+        if e in per_message_emojis or not e:  # avoid dup reactions and blanks
             continue
         per_message_emojis.append(e)
-        lines.append(f"{e} — **{name}**")
+        lines.append(f"{e} — **{nm}**")
     bucket = ""; fields: List[str] = []
     for line in lines:
         if len(bucket) + len(line) + 1 > 1000:
@@ -863,7 +923,12 @@ async def refresh_subscription_messages(guild: discord.Guild):
         if can_react(channel) and message:
             try:
                 existing = set(str(r.emoji) for r in message.reactions)
-                for e in [e for e in emojis if e not in existing]:
+                cleaned = []
+                for raw in emojis:
+                    e = _safe_unicode_emoji(raw)
+                    if e and e not in existing and e not in cleaned:
+                        cleaned.append(e)
+                for e in cleaned:
                     await message.add_reaction(e)
                     await asyncio.sleep(0.2)
             except Exception as e:
@@ -1070,7 +1135,7 @@ SEED_DATA: List[Tuple[str, str, int, int, List[str]]] = [
     ("EG", "Gelebron", 1920, 1680, ["gele"]),                                     # 32h / 28h
     ("EG", "Dhiothu", 2040, 1680, ["dino", "dhio", "d2"]),                        # 34h / 28h
     ("EG", "Bloodthorn", 2040, 1680, ["bt"]),                                     # 34h / 28h
-    ("EG", "Crom’s Manikin", 5760, 1440, ["manikin", "crom", "croms"]),          # 96h / 24h
+    ("EG", "Cromâ€™s Manikin", 5760, 1440, ["manikin", "crom", "croms"]),          # 96h / 24h
 
     # MIDRAIDS
     ("Midraids", "Aggorath", 1200, 960, ["aggy"]),                                # 20h / 16h
@@ -1091,7 +1156,7 @@ async def ensure_seed_for_guild(guild: discord.Guild):
       - Insert any missing seed bosses with exact spawn/window minutes and aliases.
       - For existing bosses that are in the seed, UPDATE spawn_minutes/window_minutes if they differ.
       - Add missing aliases (ignore dup/unique constraint).
-      - Does NOT delete any extra bosses you’ve added manually.
+      - Does NOT delete any extra bosses youâ€™ve added manually.
     """
     key = f"seed:{SEED_VERSION}:g{guild.id}"
     already = await meta_get(key)
@@ -1134,7 +1199,7 @@ async def ensure_seed_for_guild(guild: discord.Guild):
                             )
                             alias_added += 1
                         except Exception:
-                            # unique constraint or similar – safe to ignore
+                            # unique constraint or similar â€“ safe to ignore
                             pass
                 else:
                     # Insert new with -Nada default next_spawn_ts
@@ -1418,7 +1483,7 @@ async def uptime_heartbeat():
         ch = await resolve_heartbeat_channel(g.id)
         if ch and can_send(ch):
             try:
-                await ch.send("✅ Bot is online — timers active.")
+                await ch.send("âœ… Bot is online — timers active.")
             except Exception as e:
                 log.warning(f"Heartbeat failed: {e}")
 
@@ -2382,7 +2447,7 @@ async def blacklist_show(ctx):
 @commands.has_permissions(manage_guild=True)
 async def setprefix_cmd(ctx, new_prefix: str):
     if not new_prefix or len(new_prefix) > 5:
-        return await ctx.send("Pick a prefix 1–5 characters.")
+        return await ctx.send("Pick a prefix 1â€“5 characters.")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO guild_config (guild_id,prefix) VALUES (?,?) "
@@ -3038,7 +3103,7 @@ class OfferModal(discord.ui.Modal, title="Submit Offer"):
         # Update main embed (top 3 offers)
         if listing_row:
             await _update_market_message_embed(interaction.guild, listing_row)
-        await ireply(interaction, "✅ Offer submitted.", ephemeral=True)
+        await ireply(interaction, "âœ… Offer submitted.", ephemeral=True)
 
 class ListingView(discord.ui.View):
     def __init__(self, *, listing_id: int, section: str, author_id: int, taking_offers: bool, thread_id: Optional[int]):
@@ -3090,7 +3155,7 @@ class ListingView(discord.ui.View):
                         if th: await th.delete(reason="Listing closed")
                 except Exception:
                     pass
-            await ireply(interaction, "✅ Listing closed.", ephemeral=True)
+            await ireply(interaction, "âœ… Listing closed.", ephemeral=True)
 
 # ---------- Commands ----------
 lix_group = app_commands.Group(name="lix", description="Lixing (LFG) listings")
@@ -3101,14 +3166,14 @@ market_group = app_commands.Group(name="market", description="Market listings")
 async def market_set_channel(inter: discord.Interaction, channel: discord.TextChannel):
     if not await lm_require_manage(inter): return
     await lm_set_section_channel(inter.guild.id, LM_SEC_MARKET, channel.id)
-    await ireply(inter, f"✅ Market posts will go to {channel.mention}.", ephemeral=True)
+    await ireply(inter, f"âœ… Market posts will go to {channel.mention}.", ephemeral=True)
 
 @market_group.command(name="set_role", description="Set/clear a role to mention in Market digests")
 @app_commands.describe(role="Role to mention (omit to clear)")
 async def market_set_role(inter: discord.Interaction, role: Optional[discord.Role] = None):
     if not await lm_require_manage(inter): return
     await lm_set_section_role(inter.guild.id, LM_SEC_MARKET, role.id if role else None)
-    await ireply(inter, ("✅ Role cleared." if role is None else f"✅ Will mention {role.mention}."), ephemeral=True)
+    await ireply(inter, ("âœ… Role cleared." if role is None else f"âœ… Will mention {role.mention}."), ephemeral=True)
 
 @market_group.command(name="post", description="Post a Market listing (24h).")
 @app_commands.describe(
@@ -3169,7 +3234,7 @@ async def market_post(inter: discord.Interaction, item: str, trades: bool, offer
     except Exception:
         pass
 
-    await inter.followup.send(f"✅ Market post created in {ch.mention}.", ephemeral=True)
+    await inter.followup.send(f"âœ… Market post created in {ch.mention}.", ephemeral=True)
 
 @market_group.command(name="browse", description="Browse active Market listings")
 @app_commands.describe(mine="Only show your listings (true/false)")
@@ -3219,7 +3284,7 @@ async def market_close(inter: discord.Interaction, id: int):
             if th: await th.delete(reason="Listing closed")
         except Exception:
             pass
-    await ireply(inter, f"✅ Closed Market listing #{id}.", ephemeral=True)
+    await ireply(inter, f"âœ… Closed Market listing #{id}.", ephemeral=True)
 
 @market_group.command(name="clear", description="Clear ALL active Market listings (Admin/Manage Messages)")
 async def market_clear(inter: discord.Interaction):
@@ -3253,14 +3318,14 @@ async def market_clear(inter: discord.Interaction):
 async def lix_set_channel(inter: discord.Interaction, channel: discord.TextChannel):
     if not await lm_require_manage(inter): return
     await lm_set_section_channel(inter.guild.id, LM_SEC_LIX, channel.id)
-    await ireply(inter, f"✅ Lixing posts will go to {channel.mention}.", ephemeral=True)
+    await ireply(inter, f"âœ… Lixing posts will go to {channel.mention}.", ephemeral=True)
 
 @lix_group.command(name="set_role", description="Set/clear a role to mention in Lixing digests")
 @app_commands.describe(role="Role to mention (omit to clear)")
 async def lix_set_role(inter: discord.Interaction, role: Optional[discord.Role] = None):
     if not await lm_require_manage(inter): return
     await lm_set_section_role(inter.guild.id, LM_SEC_LIX, role.id if role else None)
-    await ireply(inter, ("✅ Role cleared." if role is None else f"✅ Will mention {role.mention}."), ephemeral=True)
+    await ireply(inter, ("âœ… Role cleared." if role is None else f"âœ… Will mention {role.mention}."), ephemeral=True)
 
 @lix_group.command(name="post", description="Post a Lixing (LFG) card (24h).")
 @app_commands.describe(
@@ -3318,7 +3383,7 @@ async def lix_post(inter: discord.Interaction, name: str, class_: str, level: st
     except Exception:
         pass
 
-    await inter.followup.send(f"✅ Lixing post created in {ch.mention}.", ephemeral=True)
+    await inter.followup.send(f"âœ… Lixing post created in {ch.mention}.", ephemeral=True)
 
 @lix_group.command(name="browse", description="Browse active Lixing (LFG) posts")
 @app_commands.describe(mine="Only show your posts (true/false)")
@@ -3362,7 +3427,7 @@ async def lix_close(inter: discord.Interaction, id: int):
             await msg.delete()
         except Exception:
             pass
-    await ireply(inter, f"✅ Closed Lixing post #{id}.", ephemeral=True)
+    await ireply(inter, f"âœ… Closed Lixing post #{id}.", ephemeral=True)
 
 @lix_group.command(name="clear", description="Clear ALL active Lixing posts (Admin/Manage Messages)")
 async def lix_clear(inter: discord.Interaction):
@@ -3528,7 +3593,7 @@ class AltClassSelect(discord.ui.Select):
 # Optional alt modal (name + level only; class comes from dropdown)
 class AltModal(discord.ui.Modal, title="Add Alt (optional)"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
-    alt_level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3, placeholder="e.g., 120")
+    alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
 
     def __init__(self, parent_view: "RosterConfirmView"):
         super().__init__(timeout=300)
@@ -3897,7 +3962,7 @@ class RosterStartView(discord.ui.View):
 
 class RosterModal(discord.ui.Modal, title="Start Roster"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
-    main_level = discord.ui.TextInput(label="Main level (1–250)", placeholder="215", required=True, max_length=3)
+    main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
     alts = discord.ui.TextInput(label="Alts (name / level / class; or N/A)", style=discord.TextStyle.paragraph, required=False, placeholder="N/A", max_length=400)
     timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
 
@@ -3981,7 +4046,7 @@ class AltClassSelect(discord.ui.Select):
 
 class AltModal(discord.ui.Modal, title="Add Alt"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
-    alt_level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3, placeholder="e.g., 120")
+    alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
 
     def __init__(self, parent_view: "RosterConfirmView"):
         super().__init__(timeout=300)
@@ -4316,7 +4381,7 @@ class RosterConfirmView(discord.ui.View):
             # Lightweight inline modal substitute
             modal = discord.ui.Modal(title="Add Alt")
             name = discord.ui.TextInput(label="Alt name", required=False, max_length=32)
-            level = discord.ui.TextInput(label="Alt level 1–250", required=False, max_length=3)
+            level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3)
             modal.add_item(name); modal.add_item(level)
             async def on_submit(modal_inter: discord.Interaction):
                 nm = str(name).strip()
@@ -4397,7 +4462,7 @@ class RosterStartView(discord.ui.View):
 # Force our RosterModal without any alts textbox
 class RosterModal(discord.ui.Modal, title="Start Roster — Step 1/2"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
-    main_level = discord.ui.TextInput(label="Main level (1–250)", placeholder="215", required=True, max_length=3)
+    main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
     timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
 
     def __init__(self, selected_class: str):
@@ -4553,12 +4618,12 @@ async def _roster_edit_or_post(guild: discord.Guild, member: discord.Member, row
 # ===== Player self-service level updates =====
 from discord import app_commands as _ac_levels
 
-@_ac_levels.command(name="my-level-main", description="Update your main level (1–250) without reposting")
+@_ac_levels.command(name="my-level-main", description="Update your main level (1â€“250) without reposting")
 async def my_level_main(interaction: discord.Interaction, level: int):
     if not interaction.guild:
         return await interaction.response.send_message("Guild only.", ephemeral=True)
     if not (1 <= level <= 250):
-        return await interaction.response.send_message("Level must be 1–250.", ephemeral=True)
+        return await interaction.response.send_message("Level must be 1â€“250.", ephemeral=True)
     gid = interaction.guild.id; uid = interaction.user.id
     row = await _roster_load(gid, uid)
     if not row:
@@ -4579,7 +4644,7 @@ async def my_level_alt(interaction: discord.Interaction, slot: int, level: int):
     if not interaction.guild:
         return await interaction.response.send_message("Guild only.", ephemeral=True)
     if not (1 <= level <= 250):
-        return await interaction.response.send_message("Level must be 1–250.", ephemeral=True)
+        return await interaction.response.send_message("Level must be 1â€“250.", ephemeral=True)
     if slot < 1:
         return await interaction.response.send_message("Slot must be 1 or greater.", ephemeral=True)
     gid = interaction.guild.id; uid = interaction.user.id
@@ -4800,7 +4865,7 @@ async def __altv_notify_missing(gid: int, uid: int, bad_rows):
         if not user: return
         details = "\n".join(f"- #{i+1}: name='{r.get('name','?')}', level='{r.get('level')}', class='{r.get('class','?')}'" for i,r in enumerate(bad_rows))
         txt = ("Your alt submission had missing fields. "
-               "Each alt must include **Name**, **Level 1–250**, and **Class**.\n"
+               "Each alt must include **Name**, **Level 1â€“250**, and **Class**.\n"
                f"The following were skipped:\n{details}\n"
                "Use the intake again and fill all fields.")
         try: await user.send(txt)
@@ -4943,7 +5008,7 @@ async def __altv2_notify_missing(gid: int, uid: int, bad_rows):
         user = (bot.get_user(uid) or await bot.fetch_user(uid))
         if not user: return
         details = "\n".join(f"- #{i+1}: name='{r.get('name','?')}', level='{r.get('level')}', class='{r.get('class','?')}'" for i,r in enumerate(bad_rows))
-        msg = ("Your alt submission had missing fields. Each alt must include **Name**, **Level 1–250**, and **Class**.\n"
+        msg = ("Your alt submission had missing fields. Each alt must include **Name**, **Level 1â€“250**, and **Class**.\n"
                f"Skipped:\n{details}")
         try: await user.send(msg)
         except __d_altv2.Forbidden: pass
@@ -5078,7 +5143,7 @@ try:
         lvl_txt  = (getattr(self.alt_level, "value", "") or "").strip()
         lvl = __alts_coerce_level(lvl_txt)
         if not name_txt or lvl is None:
-            return await interaction.response.send_message("Alt name and a numeric level 1–250 are required.", ephemeral=True)
+            return await interaction.response.send_message("Alt name and a numeric level 1â€“250 are required.", ephemeral=True)
         cls = getattr(self.parent_view, "selected_alt_class", None) or "Ranger"
         mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
         alt = {"name": name_txt[:32], "level": int(lvl), "class": cls}
@@ -5186,7 +5251,7 @@ except Exception as _e_fix_sel:
 
 # ==================== MOBILE TIMER UX: persist selection + compact embeds ====================
 # Goals: 
-# 1) Multi-select defaults to user’s last selection (only those selected). 
+# 1) Multi-select defaults to userâ€™s last selection (only those selected). 
 # 2) Persist selection on change. 
 # 3) Compact timer embeds for mobile without removing data.
 try:
