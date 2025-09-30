@@ -12,10 +12,10 @@
 
 from __future__ import annotations
 
-# --- Emoji sanitizer for subscription reactions ---
+# --- Emoji sanitizer and override for "Croms Manikin" ---
 def _to_unicode_reaction(e) -> str:
     """
-    Return a safe Unicode emoji for reactions.
+    Return a safe Unicode emoji for reactions and display.
     Error checks:
       1) Non-string or conversion failure -> '⭐'
       2) Reject custom emoji markup containing '<' or '>'
@@ -37,7 +37,13 @@ def _to_unicode_reaction(e) -> str:
     if not s or any(ord(ch) < 32 for ch in s) or len(s) > 6:
         return "⭐"
     return s
-# --- End emoji sanitizer ---
+
+def _norm_name(s: str) -> str:
+    try:
+        return "".join(ch for ch in s.lower() if ch.isalnum())
+    except Exception:
+        return ""
+# --- End helpers ---
 
 # --- Emoji constants and safe send helper (mojibake fix) ---
 EMJ_HOURGLASS = "⏳"
@@ -734,8 +740,10 @@ async def build_subscription_embed_for_category(guild_id: int, category: str) ->
     per_message_emojis = []
     for bid, name, _sk in rows:
         raw = emoji_map.get(bid, "⭐")
+        if _norm_name(name) == "cromsmanikin":
+            raw = "💧"
         e = _to_unicode_reaction(raw)
-        if e in per_message_emojis or not e:  # avoid dup reactions and blanksage
+        if e in per_message_emojis or not e:  # avoid dup reactions and blanks
             continue
         per_message_emojis.append(e)
         lines.append(f"{e} — **{name}**")
@@ -820,7 +828,12 @@ async def refresh_subscription_messages(guild: discord.Guild):
         if can_react(channel) and message:
             try:
                 existing = set(str(r.emoji) for r in message.reactions)
-                for e in [e for e in emojis if e not in existing]:
+                final = []
+                for raw in emojis:
+                    e = _to_unicode_reaction(raw)
+                    if e and e not in existing and e not in final:
+                        final.append(e)
+                for e in final:
                     await message.add_reaction(e)
                     await asyncio.sleep(0.2)
             except Exception as e:
