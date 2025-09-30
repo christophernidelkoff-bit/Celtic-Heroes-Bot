@@ -1617,7 +1617,6 @@ class TimerToggleView(discord.ui.View):
         self.add_item(self._make_all_button())
         self.add_item(self._make_none_button())
         self.message = None
-        # Initialize button visuals to match `shown`
         try:
             self.update_button_styles()
         except Exception:
@@ -1640,17 +1639,16 @@ class TimerToggleView(discord.ui.View):
 
     
 def update_button_styles(self):
-    """Update each category button's style/emoji based on current `shown`.
+    """Set button style/emoji based on current `shown`.
     Error checks:
-      1) Skip if no children.
-      2) Guard attribute access on foreign buttons.
-      3) Ignore exceptions from Discord enums.
+      1) Skip non-buttons or missing attributes.
+      2) Guard against invalid enum assignments.
+      3) No-op if view has no children.
     """
-    try:
-        children = list(self.children) if hasattr(self, "children") else []
-    except Exception:
-        children = []
-    for child in children:
+    children = getattr(self, "children", None)
+    if not children:
+        return
+    for child in list(children):
         try:
             if not isinstance(child, discord.ui.Button):
                 continue
@@ -1669,7 +1667,6 @@ async def persist(self):
         await set_user_shown_categories(self.guild.id, self.user_id, self.shown)
 
     async def refresh(self, interaction: discord.Interaction):
-        self.update_button_styles()
         embeds = await build_timer_embeds_for_categories(self.guild, self.shown)
         content = f"**Categories shown:** {', '.join(self.shown) if self.shown else '(none)'}"
         await self.persist()
