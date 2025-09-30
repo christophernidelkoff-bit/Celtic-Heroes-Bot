@@ -1617,9 +1617,14 @@ class TimerToggleView(discord.ui.View):
         self.add_item(self._make_all_button())
         self.add_item(self._make_none_button())
         self.message = None
+        # Initialize button visuals to match `shown`
+        try:
+            self.update_button_styles()
+        except Exception:
+            pass
 
     def _make_toggle_button(self, cat: str, idx: int):
-        return ToggleButton(label=cat, style=discord.ButtonStyle.primary, cat=cat, row=min(4, idx // 3))
+        return ToggleButton(label=cat, style=(discord.ButtonStyle.success if cat in self.shown else discord.ButtonStyle.secondary), cat=cat, row=min(4, idx // 3))
 
     def _make_all_button(self):
         return ControlButton(label="Show All", style=discord.ButtonStyle.success, action="all", row=4)
@@ -1633,10 +1638,38 @@ class TimerToggleView(discord.ui.View):
             return False
         return True
 
-    async def persist(self):
+    
+def update_button_styles(self):
+    """Update each category button's style/emoji based on current `shown`.
+    Error checks:
+      1) Skip if no children.
+      2) Guard attribute access on foreign buttons.
+      3) Ignore exceptions from Discord enums.
+    """
+    try:
+        children = list(self.children) if hasattr(self, "children") else []
+    except Exception:
+        children = []
+    for child in children:
+        try:
+            if not isinstance(child, discord.ui.Button):
+                continue
+            cat = getattr(child, "cat", None)
+            if not isinstance(cat, str):
+                continue
+            if cat in self.shown:
+                child.style = discord.ButtonStyle.success
+                child.emoji = "✅"
+            else:
+                child.style = discord.ButtonStyle.secondary
+                child.emoji = None
+        except Exception:
+            continue
+async def persist(self):
         await set_user_shown_categories(self.guild.id, self.user_id, self.shown)
 
     async def refresh(self, interaction: discord.Interaction):
+        self.update_button_styles()
         embeds = await build_timer_embeds_for_categories(self.guild, self.shown)
         content = f"**Categories shown:** {', '.join(self.shown) if self.shown else '(none)'}"
         await self.persist()
@@ -1657,6 +1690,10 @@ class ToggleButton(discord.ui.Button):
         else:
             ordered = [c for c in CATEGORY_ORDER if c in (view.shown + [self.cat])]
             view.shown = ordered
+        try:
+            view.update_button_styles()
+        except Exception:
+            pass
         await view.refresh(interaction)
 
 class ControlButton(discord.ui.Button):
