@@ -5686,379 +5686,119 @@ if __name__ == "__main__":
 
 
 
-# ==================== TIMER UI STYLING — visual only, no logic/schema changes ====================
-# Implements: state badges, relative timestamps, separators, grouped sections,
-# compact progress bar, improved select placeholder and labels, header chips, and footer hints.
-# Structure, IDs, values, DB, and logic remain unchanged.
+# ==================== EXTRA ERROR CHECKS (2025-09-30) ====================
+# Non-invasive diagnostics. No behavior changes except early exits on clearly invalid env.
 
+def _extra_check_env_and_intents():
+    # Token format sanity
+    try:
+        bad = False
+        t = TOKEN
+        if not isinstance(t, str) or len(t) < 30:
+            bad = True
+        if isinstance(t, str) and (" " in t or t.strip().lower().startswith("bot ")):
+            log.critical("[env] DISCORD_TOKEN should be the raw token string, not prefixed with 'Bot ' or containing spaces.")
+            bad = True
+        if bad:
+            raise SystemExit("Invalid DISCORD_TOKEN format.")
+    except SystemExit:
+        raise
+    except Exception as e:
+        log.warning(f"[env] token check skipped: {e}")
+
+    # Intents sanity (warn only)
+    try:
+        if not intents.message_content:
+            log.warning("[intents] message_content is disabled. Prefix commands and quick-kill shorthand may not work.")
+        if not intents.members:
+            log.warning("[intents] members intent is disabled. Auth gate and some role checks may be unreliable.")
+        if not intents.guilds:
+            log.warning("[intents] guilds intent is disabled. Bot cannot function correctly.")
+    except Exception as e:
+        log.warning(f"[intents] check failed: {e}")
+
+def _extra_check_db_writable():
+    # Ensure the DB directory is writable and that a trivial write works.
+    import os, sqlite3, tempfile, time as _t
+    try:
+        d = os.path.dirname(DB_PATH) or "."
+        testfile = os.path.join(d, f".wtest_{int(_t.time())}.tmp")
+        with open(testfile, "w") as f:
+            f.write("ok")
+        os.remove(testfile)
+    except Exception as e:
+        log.critical(f"[db] Directory '{d}' not writable: {e}")
+        raise SystemExit(1)
+    # Try a small write to meta
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        cur.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", ("_ec_probe", str(int(_t.time()))))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.critical(f"[db] SQLite is not writable or locked: {e}")
+        raise SystemExit(1)
+
+def _extra_check_seed_data():
+    # Validate SEED_DATA for dupes and mojibake
+    try:
+        suspicious = ("Ã", "Â", "â€™", "â€œ", "â€", "ðŸ")
+        seen = set()
+        dupes = []
+        moj = []
+        for (cat, name, _sp, _win, _als) in SEED_DATA:
+            k = (norm_cat(cat), str(name))
+            if k in seen:
+                dupes.append(k)
+            else:
+                seen.add(k)
+            s = str(name)
+            if any(tok in s for tok in suspicious):
+                moj.append(s)
+        if dupes:
+            log.warning(f"[seed] Duplicate seed entries detected: {dupes[:5]}{'...' if len(dupes)>5 else ''}")
+        if moj:
+            log.warning(f"[seed] Mojibake detected in seed names (examples): {moj[:3]}")
+    except Exception as e:
+        log.warning(f"[seed] validation failed: {e}")
+
+def _extra_check_instance_lock():
+    # Detect accidental multi-instance deployments sharing one token.
+    import os
+    try:
+        lf = os.path.join(DATA_DIR, "bot.lock")
+        if os.path.exists(lf):
+            log.warning("[startup] Detected existing lock file. Another instance may be running on the same token.")
+        with open(lf, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception as e:
+        log.warning(f"[startup] lock-file advisory failed: {e}")
+
+def _extra_check_emoji_palette():
+    # Report invalid or unsafe emoji entries that will be rejected by Discord.
+    try:
+        bad = []
+        for e in (EMOJI_PALETTE + EXTRA_EMOJIS):
+            s = _safe_unicode_emoji(e)
+            if s == "⭐" or not s:
+                bad.append(e)
+        if bad:
+            log.warning(f"[emoji] {len(bad)} palette entries look unsafe and may be skipped during reaction adds.")
+    except Exception as e:
+        log.warning(f"[emoji] palette check failed: {e}")
+
+# Run the checks at import time after DB_PATH and intents exist.
 try:
-    import discord as _dm_ui
-    from typing import List as _List, Dict as _Dict, Tuple as _Tuple
-except Exception:
-    _dm_ui = None
-
-def __ui_state_from_label(lbl: str) -> str:
-    """Map window_label text to a state key: open|pending|closed|lost."""
-    if not isinstance(lbl, str):
-        return "pending"
-    s = lbl.lower()
-    if "-nada" in s:
-        return "lost"
-    if "(open" in s or "open)" in s:
-        return "open"
-    if "closed" in s:
-        return "closed"
-    return "pending"
-
-def __ui_badge_for(state: str) -> str:
-    return {"open":"🟢","pending":"🟡","closed":"🔴","lost":"⚫"}.get(state, "🟡")
-
-def __ui_color_for(states: set) -> int:
-    # Priority: open>pending>closed>lost. Fallback to neutral gray.
-    # Discord Embed colors are ints; return RGB ints.
-    if "open" in states:   return 0x2ECC71  # green
-    if "pending" in states:return 0xF1C40F  # yellow
-    if "closed" in states: return 0xE74C3C  # red
-    if "lost" in states:   return 0x95A5A6  # gray
-    return 0x95A5A6
-
-def __ui_progress(now_ts_val: int, start_ts: int, window_m: int) -> str:
-    """Return an 8-step unicode progress bar for window openness."""
-    try:
-        total = max(1, int(window_m) * 60)
-        elapsed = max(0, int(now_ts_val) - int(start_ts))
-        pct = 0.0 if total <= 0 else max(0.0, min(1.0, elapsed / total))
-        idx = int(round(pct * 7))  # 0..7
-    except Exception:
-        idx = 0
-    bars = ["▁","▂","▃","▄","▅","▆","▇","█"]
-    return "".join(bars[:idx+1]).ljust(8, "▁")
-
-def __ui_abs(ts:int)->str:
-    try:
-        return f"<t:{int(ts)}:f>"
-    except Exception:
-        return ""
-
-def __ui_rel(ts:int)->str:
-    try:
-        return f"<t:{int(ts)}:R>"
-    except Exception:
-        return ""
-
-def __chip_bar(shown: _List[str]) -> str:
-    chips = []
-    for c in CATEGORY_ORDER:
-        if c in (shown or []):
-            try:
-                chips.append(f"✅ {category_emoji(c)} {c}")
-            except Exception:
-                chips.append(f"✅ {c}")
-    return " | ".join(chips) if chips else "(none)"
-
-if _dm_ui is not None:
-    # --- Styled select with placeholder and checkmark labels ---
-    try:
-        class StyledMobileCategorySelect(_dm_ui.ui.Select):
-            def __init__(self, parent_view):
-                self.parent_view = parent_view
-                opts = []
-                for cat in CATEGORY_ORDER:
-                    emoji = EMOJI_FOR_CAT.get(cat) if 'EMOJI_FOR_CAT' in globals() else None
-                    checked = cat in (parent_view.shown or [])
-                    label = f"✅ {cat}" if checked else cat
-                    try:
-                        opts.append(_dm_ui.SelectOption(label=label, value=cat, emoji=emoji, default=checked))
-                    except Exception:
-                        opts.append(_dm_ui.SelectOption(label=label, value=cat, default=checked))
-                super().__init__(
-                    placeholder="Filter categories... (tap to toggle)",
-                    min_values=0,
-                    max_values=len(opts) if len(opts) > 0 else 1,
-                    options=opts,
-                    row=0,
-                )
-            async def callback(self, interaction: _dm_ui.Interaction):
-                self.parent_view.shown = [c for c in CATEGORY_ORDER if c in self.values]
-                try:
-                    await set_user_shown_categories(interaction.guild.id, interaction.user.id, self.parent_view.shown)
-                except Exception as e:
-                    if 'log' in globals():
-                        try: log.warning(f"[ui] save shown failed: {e}")
-                        except Exception: pass
-                await self.parent_view.refresh(interaction)
-
-        # Make TimerToggleView use the styled select everywhere refresh builds a select
-        try:
-            MobileCategorySelect  # noqa: F821
-            MobileCategorySelect = StyledMobileCategorySelect  # type: ignore
-        except Exception:
-            pass
-
-        # Ensure constructor uses the styled select
-        if 'TimerToggleView' in globals():
-            _orig_ttv_init = TimerToggleView.__init__
-            def __styled_ttv_init(self, guild: _dm_ui.Guild, user_id: int, init_show: _List[str]):
-                _dm_ui.ui.View.__init__(self, timeout=300)
-                self.guild = guild
-                self.user_id = user_id
-                self.shown = [c for c in CATEGORY_ORDER if c in (init_show or [])] or CATEGORY_ORDER[:]
-                try:
-                    self.add_item(StyledMobileCategorySelect(self))
-                except Exception:
-                    try:
-                        self.add_item(MobileCategorySelect(self))  # fallback
-                    except Exception:
-                        pass
-                try:
-                    self.add_item(self._make_all_button()); self.add_item(self._make_none_button())
-                except Exception:
-                    pass
-                self.message = None
-            TimerToggleView.__init__ = __styled_ttv_init  # type: ignore
-    except Exception as _e_sel:
-        try:
-            if 'log' in globals(): log.warning(f"[ui] styled select init failed: {_e_sel}")
-        except Exception:
-            pass
-
-    # --- Styled embed builder with sections, badges, timestamps, separators, footer ---
-    async def _build_timer_embeds_styled(guild: _dm_ui.Guild, categories: _List[str]) -> _List[_dm_ui.Embed]:
-        gid = guild.id
-        show_eta = await get_show_eta(gid)
-        if not categories:
-            return []
-        # fetch rows
-        try:
-            async with aiosqlite.connect(DB_PATH) as db:
-                q_marks = ",".join("?" for _ in categories)
-                sql = f"SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=? AND category IN ({q_marks})"
-                c = await db.execute(sql, (gid, *[norm_cat(c) for c in categories]))
-                rows = await c.fetchall()
-        except Exception as e:
-            if 'log' in globals():
-                try: log.error(f"[ui] timer query failed: {e}")
-                except Exception: pass
-            return []
-        now = now_ts()
-        grouped: _Dict[str, _List[_Tuple[str,str,int,int]]] = {k: [] for k in categories}
-        for name, ts, cat, sk, win in rows:
-            nc = norm_cat(cat)
-            if nc in grouped:
-                try:
-                    grouped[nc].append((sk or "", name, int(ts), int(win)))
-                except Exception:
-                    # error check: skip bad rows
-                    continue
-        # sort
-        for cat in grouped:
-            items = grouped[cat]
-            items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
-
-        embeds: _List[_dm_ui.Embed] = []
-        for cat in categories:
-            items = grouped.get(cat, [])
-            if not items:
-                em = _dm_ui.Embed(
-                    title=f"{category_emoji(cat)} {cat}",
-                    description="No timers.",
-                    color=await get_category_color(gid, cat)
-                )
-                em.set_footer(text="Tap categories to filter • Times auto-update")
-                embeds.append(em)
-                continue
-
-            open_lines: _List[str] = []
-            pending_lines: _List[str] = []
-            closed_lines: _List[str] = []
-            lost_lines: _List[str] = []
-
-            states_present = set()
-            for sk, nm, ts, win_m in items:
-                lbl = window_label(now, ts, win_m)
-                state = __ui_state_from_label(lbl)
-                states_present.add(state)
-                badge = __ui_badge_for(state)
-
-                # Build line pieces
-                if state == "pending":
-                    line = f"{badge} **{nm}** • opens {__ui_rel(ts)} ({__ui_abs(ts)})"
-                elif state == "open":
-                    # progress bar
-                    pb = __ui_progress(ts, ts, win_m)
-                    left_m = max(0, (win_m*60 - max(0, now - ts)) // 60)
-                    line = f"{badge} **{nm}** • window {left_m}m • {pb} • started {__ui_rel(ts)}"
-                elif state == "closed":
-                    # until -Nada cutoff
-                    nada_cut = ts + max(0, int(win_m))*60 + int(NADA_GRACE_SECONDS)
-                    line = f"{badge} **{nm}** • closed • -Nada {__ui_rel(nada_cut)}"
-                else:  # lost
-                    line = f"{badge} **{nm}** • lost"
-
-                # optional ETA absolute time
-                if show_eta and state in ("pending","open"):
-                    try:
-                        line += f" • {__ui_abs(ts)}"
-                    except Exception:
-                        pass
-
-                if state == "pending":   pending_lines.append(line)
-                elif state == "open":    open_lines.append(line)
-                elif state == "closed":  closed_lines.append(line)
-                else:                    lost_lines.append(line)
-
-            def _join(lines: _List[str]) -> str:
-                return ("\n┈┈┈\n").join(lines) if lines else ""
-
-            parts: _List[str] = []
-            if open_lines:    parts.append("**OPEN**\n" + _join(open_lines))
-            if pending_lines: parts.append("**PENDING**\n" + _join(pending_lines))
-            if closed_lines:  parts.append("**CLOSED**\n" + _join(closed_lines))
-            if lost_lines:    parts.append("**LOST**\n" + _join(lost_lines))
-
-            desc = sanitize_ui("\n\n".join([p for p in parts if p]) or "No timers.")
-            # Choose dynamic color or category color fallback
-            try:
-                color = __ui_color_for(states_present) if states_present else await get_category_color(gid, cat)
-            except Exception:
-                color = await get_category_color(gid, cat)
-            em = _dm_ui.Embed(title=sanitize_ui(f"{category_emoji(cat)} {cat}"), description=desc, color=color)
-            try:
-                em.set_footer(text="Tap categories to filter • Times auto-update")
-            except Exception:
-                pass
-            embeds.append(em)
-
-        # keep Discord's hard limit reasonable
-        return embeds[:10]
-
-    # Activate styled builder
-    try:
-        build_timer_embeds_for_categories = _build_timer_embeds_styled  # type: ignore
-        if 'log' in globals():
-            try: log.info("[ui] styled timer embed builder active")
-            except Exception: pass
-    except Exception:
-        pass
-
-    # Wrap refresh to update the header chip bar after the original edit
-    try:
-        if 'TimerToggleView' in globals():
-            _orig_refresh = TimerToggleView.refresh  # type: ignore
-            async def __styled_refresh(self, interaction: _dm_ui.Interaction):
-                try:
-                    await _orig_refresh(self, interaction)
-                finally:
-                    # Post-edit content to the chip bar
-                    try:
-                        chips = __chip_bar(getattr(self, 'shown', []) or [])
-                        if interaction.response.is_done():
-                            await interaction.edit_original_response(content=chips)
-                        else:
-                            await interaction.response.edit_message(content=chips)
-                    except Exception:
-                        pass
-            TimerToggleView.refresh = __styled_refresh  # type: ignore
-    except Exception as _e_rf:
-        try:
-            if 'log' in globals(): log.warning(f="[ui] styled refresh wrap failed: {_e_rf}")
-        except Exception:
-            pass
-
-# ==================== END TIMER UI STYLING ====================
-
-
-
-# ==================== STARTUP LOGIN BACKOFF HOTFIX ====================
-# Purpose: handle Cloudflare 1015 / HTTP 429 at static_login by backing off,
-# ensure single clean session close, and avoid reconnect thrash.
-# Scope: startup only. No schema or business-logic changes.
-
-import asyncio, random
-import aiohttp
-import discord
-from discord.errors import HTTPException
-
-async def _start_with_backoff(_bot: discord.Client, _token: str, *, max_retries: int = 8) -> None:
-    # Error check #1: token presence and shape
-    if not _token or not isinstance(_token, str) or len(_token) < 30:
-        if 'log' in globals():
-            try: log.error("[startup] DISCORD_TOKEN missing or too short; aborting start")
-            except Exception: pass
-        return
-
-    delay = 5
-    for attempt in range(1, max_retries + 1):
-        try:
-            await _bot.start(_token)
-            return  # Successful start; discord.py manages lifetime thereafter
-        except HTTPException as e:
-            status = getattr(e.response, "status", None)
-            body_snip = ""
-            try:
-                # Error check #2: try to read limited body for diagnostics (may fail if no body)
-                body_snip = (await e.response.text())[:200] if hasattr(e.response, "text") else ""
-            except Exception:
-                pass
-
-            text_all = f"{e} {body_snip}".lower()
-            if status == 429 or "rate limit" in text_all or "cloudflare" in text_all or "1015" in text_all:
-                # backoff + jitter; cap
-                jitter = random.uniform(0.5, 1.5)
-                wait = min(300, int(delay * jitter))
-                if 'log' in globals():
-                    try: log.warning(f"[startup] login rate limited (attempt {attempt}/{max_retries}); sleeping {wait}s")
-                    except Exception: pass
-                await asyncio.sleep(wait)
-                delay = min(delay * 2, 300)
-                continue
-            if status in (401, 403):
-                # Error check #3: invalid token or forbidden, no retries
-                if 'log' in globals():
-                    try: log.error(f"[startup] login failed with status {status}; check DISCORD_TOKEN")
-                    except Exception: pass
-                return
-            # Unknown HTTPException; rethrow
-            raise
-        except aiohttp.ClientConnectorError as ce:
-            # Network issue; bounded backoff
-            wait = min(120, delay)
-            if 'log' in globals():
-                try: log.warning(f"[startup] network error during login: {ce}; retry in {wait}s")
-                except Exception: pass
-            await asyncio.sleep(wait)
-            delay = min(delay * 2, 300)
-        except Exception as ex:
-            # Unexpected; log and rethrow
-            if 'log' in globals():
-                try: log.exception(f"[startup] unexpected during login: {ex}")
-                except Exception: pass
-            raise
-
-# Bind the hotfix by wrapping main() to use the backoff at startup.
-try:
-    # bot and TOKEN must already be defined at module scope in the baseline
-    bot  # type: ignore
-    TOKEN  # type: ignore
-
-    _orig_main = main  # type: ignore
-
-    async def main():
-        try:
-            await _start_with_backoff(bot, TOKEN)  # type: ignore
-        finally:
-            # Attempt graceful close to avoid "Unclosed connector"
-            try:
-                await bot.close()  # type: ignore
-            except Exception:
-                pass
-
-    if 'log' in globals():
-        try: log.info("[startup] login backoff hotfix active")
-        except Exception: pass
-except Exception as _e_bind:
-    try:
-        if 'log' in globals(): log.warning(f"[startup] failed to bind login backoff hotfix: {_e_bind}")
-    except Exception:
-        pass
-# ==================== END STARTUP LOGIN BACKOFF HOTFIX ====================
+    _extra_check_env_and_intents()
+    _extra_check_db_writable()
+    _extra_check_seed_data()
+    _extra_check_instance_lock()
+    _extra_check_emoji_palette()
+except SystemExit:
+    raise
+except Exception as _e_extra:
+    try: log.warning(f"[startup] extra checks encountered non-fatal error: {_e_extra}")
+    except Exception: pass
+# ==================== END EXTRA ERROR CHECKS ====================
