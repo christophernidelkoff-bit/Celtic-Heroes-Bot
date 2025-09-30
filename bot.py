@@ -254,7 +254,7 @@ async def safe_edit(message, /, **kwargs):
             return False  # too soon; next tick will try again
 
     try:
-        await safe_edit(message, **kwargs)
+        await message.edit(**kwargs)
         _EDIT_STATE[message.id] = (digest, now)
         return True
     except HTTPException as e:
@@ -1328,10 +1328,6 @@ async def on_guild_join(guild: discord.Guild):
         pass
     try:
         await ensure_seed_for_guild(guild)
-    except Exception:
-        pass
-    try:
-        await refresh_subscription_messages(guild)
     except Exception:
         pass
     try:
