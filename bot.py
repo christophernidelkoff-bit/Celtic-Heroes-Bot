@@ -5686,48 +5686,44 @@ if __name__ == "__main__":
 
 
 
-# ==================== TIMER UI STYLING — VISUAL ONLY (2025-09-30) ====================
-# No schema or logic changes. IDs and values unchanged.
-# Adds: state badges, colored borders, relative/absolute time stamps, separators, grouped sections,
-# a simple progress bar for open windows, category chips header, improved select placeholder and labels,
-# and footer hints. Three extra error checks included inside this patch.
+# ==================== TIMER UI STYLING — FORCED BIND (2025-09-30) ====================
+# Visual-only. No schema or business logic changes.
+# Guarantees adoption by rebinding any builder named like build_timer_embeds* to the visual builder.
+# Also replaces TimerToggleView.refresh to re-apply visuals after baseline runs.
 
 try:
-    import discord as _dvis
-    from typing import List as _List, Dict as _Dict, Tuple as _Tuple
+    import discord as _dv
+    from typing import List as _List, Dict as _Dict, Tuple as _Tuple, Callable as _Callable
 except Exception:
-    _dvis = None
+    _dv = None
 
-# ---- helpers ----
-def __v_state(lbl: str) -> str:
-    if not isinstance(lbl, str):  # error check 1
-        return "pending"
+def __fv_state(lbl: str) -> str:
+    if not isinstance(lbl, str): return "pending"   # check 1
     s = lbl.lower()
     if "-nada" in s: return "lost"
     if "closed" in s: return "closed"
     if "(open" in s or "open)" in s: return "open"
     return "pending"
 
-def __v_badge(state: str) -> str:
-    return {"open":"🟢","pending":"🟡","closed":"🔴","lost":"⚫"}.get(state, "🟡")
+def __fv_badge(st: str) -> str:
+    return {"open":"🟢","pending":"🟡","closed":"🔴","lost":"⚫"}.get(st, "🟡")
 
-def __v_color(states: set) -> int:
+def __fv_color(states: set) -> int:
     if "open" in states:   return 0x2ECC71
     if "pending" in states:return 0xF1C40F
     if "closed" in states: return 0xE74C3C
     if "lost" in states:   return 0x95A5A6
     return 0x95A5A6
 
-def __v_abs(ts:int)->str:
+def __fv_abs(ts:int)->str:
     try: return f"<t:{int(ts)}:f>"
     except Exception: return ""
 
-def __v_rel(ts:int)->str:
+def __fv_rel(ts:int)->str:
     try: return f"<t:{int(ts)}:R>"
     except Exception: return ""
 
-def __v_prog(now_s:int, start_s:int, win_m:int)->str:
-    # error check 2: guard inputs
+def __fv_prog(now_s:int, start_s:int, win_m:int)->str:
     try:
         total = max(1, int(win_m) * 60)
         elapsed = max(0, int(now_s) - int(start_s))
@@ -5738,92 +5734,20 @@ def __v_prog(now_s:int, start_s:int, win_m:int)->str:
     bars = ["▁","▂","▃","▄","▅","▆","▇","█"]
     return "".join(bars[:idx+1]).ljust(8, "▁")
 
-def __v_chip_bar(shown: _List[str]) -> str:
+def __fv_chip_bar(shown: _List[str]) -> str:
     chips = []
     try:
         for c in CATEGORY_ORDER:
             if c in (shown or []):
-                try:
-                    chips.append(f"✅ {category_emoji(c)} {c}")
-                except Exception:
-                    chips.append(f"✅ {c}")
+                try: chips.append(f"✅ {category_emoji(c)} {c}")
+                except Exception: chips.append(f"✅ {c}")
     except Exception:
         return ""
-    return " | ".join(chips) if chips else ""
+    return " | ".join(chips)
 
-if _dvis is not None:
-    # ---- Category select: placeholder + checkmarks in labels (value unchanged) ----
-    try:
-        class _StyledSelect(_dvis.ui.Select):
-            def __init__(self, parent_view):
-                self.parent_view = parent_view
-                opts = []
-                for cat in CATEGORY_ORDER:
-                    checked = cat in (getattr(parent_view, "shown", []) or [])
-                    label = f"✅ {cat}" if checked else cat
-                    emoji = None
-                    try:
-                        emoji = EMOJI_FOR_CAT.get(cat)  # optional existing map
-                    except Exception:
-                        pass
-                    try:
-                        opts.append(_dvis.SelectOption(label=label, value=cat, emoji=emoji, default=checked))
-                    except Exception:
-                        opts.append(_dvis.SelectOption(label=label, value=cat, default=checked))
-                super().__init__(
-                    placeholder="Filter categories… (tap to toggle)",
-                    min_values=0,
-                    max_values=max(1, len(opts)),
-                    options=opts,
-                    row=0,
-                )
-            async def callback(self, interaction: _dvis.Interaction):
-                # Persist selection using existing helper if present
-                self.parent_view.shown = [c for c in CATEGORY_ORDER if c in self.values]
-                try:
-                    await set_user_shown_categories(interaction.guild.id, interaction.user.id, self.parent_view.shown)
-                except Exception:
-                    pass
-                await self.parent_view.refresh(interaction)
-
-        # Replace MobileCategorySelect if it exists; else leave baseline as-is
-        try:
-            MobileCategorySelect  # noqa: F821
-            MobileCategorySelect = _StyledSelect  # type: ignore
-        except Exception:
-            pass
-
-        # Ensure TimerToggleView constructor adds our styled select first row
-        if 'TimerToggleView' in globals():
-            _orig_init = TimerToggleView.__init__
-            def __vis_init(self, guild: _dvis.Guild, user_id: int, init_show: _List[str]):
-                _dvis.ui.View.__init__(self, timeout=300)
-                self.guild = guild
-                self.user_id = user_id
-                self.shown = [c for c in CATEGORY_ORDER if c in (init_show or [])] or CATEGORY_ORDER[:]
-                try:
-                    self.add_item(_StyledSelect(self))
-                except Exception:
-                    try:
-                        self.add_item(MobileCategorySelect(self))  # fallback to baseline
-                    except Exception:
-                        pass
-                # keep baseline buttons
-                try:
-                    self.add_item(self._make_all_button()); self.add_item(self._make_none_button())
-                except Exception:
-                    pass
-                self.message = None
-            TimerToggleView.__init__ = __vis_init  # type: ignore
-    except Exception as _e_sel:
-        try:
-            if 'log' in globals(): log.warning(f"[visual] styled select not applied: {_e_sel}")
-        except Exception:
-            pass
-
-    # ---- Styled embed builder: sections + badges + times + separators + footer ----
-    async def _build_timer_embeds_visual(guild: _dvis.Guild, categories: _List[str]) -> _List[_dvis.Embed]:
-        # error check 3: validate categories
+if _dv is not None:
+    async def _build_timer_embeds_visual(guild: _dv.Guild, categories: _List[str]) -> _List[_dv.Embed]:
+        # check 2
         if not isinstance(categories, list) or not categories:
             return []
         gid = guild.id
@@ -5832,7 +5756,7 @@ if _dvis is not None:
         except Exception:
             show_eta = False
 
-        # fetch timers
+        # query
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 q_marks = ",".join("?" for _ in categories)
@@ -5842,68 +5766,55 @@ if _dvis is not None:
         except Exception as e:
             try:
                 if 'log' in globals(): log.error(f"[visual] timer query failed: {e}")
-            except Exception:
-                pass
+            except Exception: pass
             return []
 
         now = now_ts()
         grouped: _Dict[str, _List[_Tuple[str,str,int,int]]] = {k: [] for k in categories}
         for name, ts, cat, sk, win in rows:
-            nc = norm_cat(cat)
             try:
-                grouped[nc].append((sk or "", name, int(ts), int(win)))
+                grouped[norm_cat(cat)].append((sk or "", name, int(ts), int(win)))
             except Exception:
-                # error check 4: skip corrupt rows
-                continue
+                continue  # check 3
 
-        # sort per category
+        # sort
         for cat in grouped:
-            items = grouped[cat]
-            items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
+            grouped[cat].sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
 
-        embeds: _List[_dvis.Embed] = []
+        embeds: _List[_dv.Embed] = []
         for cat in categories:
             items = grouped.get(cat, [])
             if not items:
-                em = _dvis.Embed(
+                em = _dv.Embed(
                     title=f"{category_emoji(cat)} {cat}",
                     description="No timers.",
                     color=await get_category_color(gid, cat)
                 )
                 try: em.set_footer(text="Tap categories to filter • Times auto-update")
                 except Exception: pass
-                embeds.append(em)
-                continue
+                embeds.append(em); continue
 
-            open_lines: _List[str] = []
-            pending_lines: _List[str] = []
-            closed_lines: _List[str] = []
-            lost_lines: _List[str] = []
-
+            open_lines: _List[str] = []; pending_lines: _List[str] = []; closed_lines: _List[str] = []; lost_lines: _List[str] = []
             states_present = set()
             for sk, nm, ts, win_m in items:
                 lbl = window_label(now, ts, win_m)
-                st = __v_state(lbl)
-                states_present.add(st)
-                badge = __v_badge(st)
+                st = __fv_state(lbl); states_present.add(st)
+                b = __fv_badge(st)
                 if st == "pending":
-                    line = f"{badge} **{nm}** • opens {__v_rel(ts)} ({__v_abs(ts)})"
+                    line = f"{b} **{nm}** • opens {__fv_rel(ts)} ({__fv_abs(ts)})"
                 elif st == "open":
-                    pb = __v_prog(now, ts, win_m)
+                    pb = __fv_prog(now, ts, win_m)
                     left_m = max(0, (win_m*60 - max(0, now - ts)) // 60)
-                    line = f"{badge} **{nm}** • window {left_m}m • {pb} • started {__v_rel(ts)}"
+                    line = f"{b} **{nm}** • window {left_m}m • {pb} • started {__fv_rel(ts)}"
                 elif st == "closed":
                     nada_cut = ts + max(0, int(win_m))*60 + int(NADA_GRACE_SECONDS)
-                    line = f"{badge} **{nm}** • closed • -Nada {__v_rel(nada_cut)}"
+                    line = f"{b} **{nm}** • closed • -Nada {__fv_rel(nada_cut)}"
                 else:
-                    line = f"{badge} **{nm}** • lost"
+                    line = f"{b} **{nm}** • lost"
                 if show_eta and st in ("pending","open"):
-                    try: line += f" • {__v_abs(ts)}"
+                    try: line += f" • {__fv_abs(ts)}"
                     except Exception: pass
-                if st == "pending":   pending_lines.append(line)
-                elif st == "open":    open_lines.append(line)
-                elif st == "closed":  closed_lines.append(line)
-                else:                 lost_lines.append(line)
+                (pending_lines if st=="pending" else open_lines if st=="open" else closed_lines if st=="closed" else lost_lines).append(line)
 
             def _join(ls: _List[str]) -> str: return ("\n┈┈┈\n").join(ls) if ls else ""
 
@@ -5914,49 +5825,85 @@ if _dvis is not None:
             if lost_lines:    parts.append("**LOST**\n" + _join(lost_lines))
 
             desc = sanitize_ui("\n\n".join([p for p in parts if p]) or "No timers.")
-            try:
-                color = __v_color(states_present) if states_present else await get_category_color(gid, cat)
-            except Exception:
-                color = await get_category_color(gid, cat)
-            em = _dvis.Embed(title=sanitize_ui(f"{category_emoji(cat)} {cat}"), description=desc, color=color)
+            try: color = __fv_color(states_present) if states_present else await get_category_color(gid, cat)
+            except Exception: color = await get_category_color(gid, cat)
+            em = _dv.Embed(title=sanitize_ui(f"{category_emoji(cat)} {cat}"), description=desc, color=color)
             try: em.set_footer(text="Tap categories to filter • Times auto-update")
             except Exception: pass
             embeds.append(em)
 
-        # error check 5: clamp to a sane embed count
-        return embeds[:10]
+        return embeds[:10]  # check 4
 
-    # Bind the visual builder if baseline provides the hook
+    # Rebind any builder matching build_timer_embeds*
     try:
-        build_timer_embeds_for_categories = _build_timer_embeds_visual  # type: ignore
+        for _name, _obj in list(globals().items()):
+            if callable(_obj) and isinstance(_name, str):
+                ln = _name.lower()
+                if ln.startswith("build_timer_embeds"):
+                    globals()[_name] = _build_timer_embeds_visual
         if 'log' in globals():
-            try: log.info("[visual] timer embed styling active")
+            try: log.info("[visual] bound to all build_timer_embeds* hooks")
             except Exception: pass
-    except Exception:
-        pass
+    except Exception as _e_bind:
+        try:
+            if 'log' in globals(): log.warning(f"[visual] builder rebind failed: {_e_bind}")
+        except Exception: pass
 
-    # After refresh, show chips in message content
+    # Force visuals after baseline refresh
     try:
         if 'TimerToggleView' in globals():
             _orig_refresh = TimerToggleView.refresh  # type: ignore
-            async def __vis_refresh(self, interaction: _dvis.Interaction):
+            async def __fv_refresh(self, interaction: _dv.Interaction):
                 try:
                     await _orig_refresh(self, interaction)
                 finally:
                     try:
-                        chips = __v_chip_bar(getattr(self, 'shown', []) or [])
-                        if chips:
-                            if interaction.response.is_done():
-                                await interaction.edit_original_response(content=chips)
-                            else:
-                                await interaction.response.edit_message(content=chips)
-                    except Exception:
-                        pass
-            TimerToggleView.refresh = __vis_refresh  # type: ignore
+                        cats = getattr(self, 'shown', []) or CATEGORY_ORDER[:]
+                        ems = await _build_timer_embeds_visual(interaction.guild, cats)
+                        if interaction.response.is_done():
+                            await interaction.edit_original_response(embeds=ems, content=__fv_chip_bar(cats))
+                        else:
+                            await interaction.response.edit_message(embeds=ems, content=__fv_chip_bar(cats))
+                    except Exception as _e2:
+                        try:
+                            if 'log' in globals(): log.warning(f"[visual] post-refresh apply failed: {_e2}")
+                        except Exception: pass
+            TimerToggleView.refresh = __fv_refresh  # type: ignore
     except Exception as _e_rf:
         try:
-            if 'log' in globals(): log.warning(f"[visual] chip header not applied: {_e_rf}")
+            if 'log' in globals(): log.warning(f"[visual] refresh patch failed: {_e_rf}")
+        except Exception: pass
+
+    # Optional: styled select placeholder and labels; safe fallback
+    try:
+        class _FVSelect(_dv.ui.Select):
+            def __init__(self, parent_view):
+                self.parent_view = parent_view
+                opts = []
+                for cat in CATEGORY_ORDER:
+                    checked = cat in (getattr(parent_view, "shown", []) or [])
+                    label = f"✅ {cat}" if checked else cat
+                    try:
+                        emoji = EMOJI_FOR_CAT.get(cat)
+                    except Exception:
+                        emoji = None
+                    try:
+                        opts.append(_dv.SelectOption(label=label, value=cat, emoji=emoji, default=checked))
+                    except Exception:
+                        opts.append(_dv.SelectOption(label=label, value=cat, default=checked))
+                super().__init__(placeholder="Filter categories… (tap to toggle)", min_values=0, max_values=max(1, len(opts)), options=opts, row=0)
+            async def callback(self, interaction: _dv.Interaction):
+                self.parent_view.shown = [c for c in CATEGORY_ORDER if c in self.values]
+                try: await set_user_shown_categories(interaction.guild.id, interaction.user.id, self.parent_view.shown)
+                except Exception: pass
+                await self.parent_view.refresh(interaction)
+        try:
+            MobileCategorySelect  # noqa
+            MobileCategorySelect = _FVSelect  # type: ignore
         except Exception:
             pass
-
-# ==================== END TIMER UI STYLING ====================
+    except Exception as _e_sel:
+        try:
+            if 'log' in globals(): log.warning(f"[visual] select patch failed: {_e_sel}")
+        except Exception: pass
+# ==================== END TIMER UI STYLING — FORCED BIND ====================
