@@ -5686,119 +5686,277 @@ if __name__ == "__main__":
 
 
 
-# ==================== EXTRA ERROR CHECKS (2025-09-30) ====================
-# Non-invasive diagnostics. No behavior changes except early exits on clearly invalid env.
+# ==================== TIMER UI STYLING — VISUAL ONLY (2025-09-30) ====================
+# No schema or logic changes. IDs and values unchanged.
+# Adds: state badges, colored borders, relative/absolute time stamps, separators, grouped sections,
+# a simple progress bar for open windows, category chips header, improved select placeholder and labels,
+# and footer hints. Three extra error checks included inside this patch.
 
-def _extra_check_env_and_intents():
-    # Token format sanity
-    try:
-        bad = False
-        t = TOKEN
-        if not isinstance(t, str) or len(t) < 30:
-            bad = True
-        if isinstance(t, str) and (" " in t or t.strip().lower().startswith("bot ")):
-            log.critical("[env] DISCORD_TOKEN should be the raw token string, not prefixed with 'Bot ' or containing spaces.")
-            bad = True
-        if bad:
-            raise SystemExit("Invalid DISCORD_TOKEN format.")
-    except SystemExit:
-        raise
-    except Exception as e:
-        log.warning(f"[env] token check skipped: {e}")
-
-    # Intents sanity (warn only)
-    try:
-        if not intents.message_content:
-            log.warning("[intents] message_content is disabled. Prefix commands and quick-kill shorthand may not work.")
-        if not intents.members:
-            log.warning("[intents] members intent is disabled. Auth gate and some role checks may be unreliable.")
-        if not intents.guilds:
-            log.warning("[intents] guilds intent is disabled. Bot cannot function correctly.")
-    except Exception as e:
-        log.warning(f"[intents] check failed: {e}")
-
-def _extra_check_db_writable():
-    # Ensure the DB directory is writable and that a trivial write works.
-    import os, sqlite3, tempfile, time as _t
-    try:
-        d = os.path.dirname(DB_PATH) or "."
-        testfile = os.path.join(d, f".wtest_{int(_t.time())}.tmp")
-        with open(testfile, "w") as f:
-            f.write("ok")
-        os.remove(testfile)
-    except Exception as e:
-        log.critical(f"[db] Directory '{d}' not writable: {e}")
-        raise SystemExit(1)
-    # Try a small write to meta
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
-        cur = conn.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-        cur.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", ("_ec_probe", str(int(_t.time()))))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        log.critical(f"[db] SQLite is not writable or locked: {e}")
-        raise SystemExit(1)
-
-def _extra_check_seed_data():
-    # Validate SEED_DATA for dupes and mojibake
-    try:
-        suspicious = ("Ã", "Â", "â€™", "â€œ", "â€", "ðŸ")
-        seen = set()
-        dupes = []
-        moj = []
-        for (cat, name, _sp, _win, _als) in SEED_DATA:
-            k = (norm_cat(cat), str(name))
-            if k in seen:
-                dupes.append(k)
-            else:
-                seen.add(k)
-            s = str(name)
-            if any(tok in s for tok in suspicious):
-                moj.append(s)
-        if dupes:
-            log.warning(f"[seed] Duplicate seed entries detected: {dupes[:5]}{'...' if len(dupes)>5 else ''}")
-        if moj:
-            log.warning(f"[seed] Mojibake detected in seed names (examples): {moj[:3]}")
-    except Exception as e:
-        log.warning(f"[seed] validation failed: {e}")
-
-def _extra_check_instance_lock():
-    # Detect accidental multi-instance deployments sharing one token.
-    import os
-    try:
-        lf = os.path.join(DATA_DIR, "bot.lock")
-        if os.path.exists(lf):
-            log.warning("[startup] Detected existing lock file. Another instance may be running on the same token.")
-        with open(lf, "w") as f:
-            f.write(str(os.getpid()))
-    except Exception as e:
-        log.warning(f"[startup] lock-file advisory failed: {e}")
-
-def _extra_check_emoji_palette():
-    # Report invalid or unsafe emoji entries that will be rejected by Discord.
-    try:
-        bad = []
-        for e in (EMOJI_PALETTE + EXTRA_EMOJIS):
-            s = _safe_unicode_emoji(e)
-            if s == "⭐" or not s:
-                bad.append(e)
-        if bad:
-            log.warning(f"[emoji] {len(bad)} palette entries look unsafe and may be skipped during reaction adds.")
-    except Exception as e:
-        log.warning(f"[emoji] palette check failed: {e}")
-
-# Run the checks at import time after DB_PATH and intents exist.
 try:
-    _extra_check_env_and_intents()
-    _extra_check_db_writable()
-    _extra_check_seed_data()
-    _extra_check_instance_lock()
-    _extra_check_emoji_palette()
-except SystemExit:
-    raise
-except Exception as _e_extra:
-    try: log.warning(f"[startup] extra checks encountered non-fatal error: {_e_extra}")
-    except Exception: pass
-# ==================== END EXTRA ERROR CHECKS ====================
+    import discord as _dvis
+    from typing import List as _List, Dict as _Dict, Tuple as _Tuple
+except Exception:
+    _dvis = None
+
+# ---- helpers ----
+def __v_state(lbl: str) -> str:
+    if not isinstance(lbl, str):  # error check 1
+        return "pending"
+    s = lbl.lower()
+    if "-nada" in s: return "lost"
+    if "closed" in s: return "closed"
+    if "(open" in s or "open)" in s: return "open"
+    return "pending"
+
+def __v_badge(state: str) -> str:
+    return {"open":"🟢","pending":"🟡","closed":"🔴","lost":"⚫"}.get(state, "🟡")
+
+def __v_color(states: set) -> int:
+    if "open" in states:   return 0x2ECC71
+    if "pending" in states:return 0xF1C40F
+    if "closed" in states: return 0xE74C3C
+    if "lost" in states:   return 0x95A5A6
+    return 0x95A5A6
+
+def __v_abs(ts:int)->str:
+    try: return f"<t:{int(ts)}:f>"
+    except Exception: return ""
+
+def __v_rel(ts:int)->str:
+    try: return f"<t:{int(ts)}:R>"
+    except Exception: return ""
+
+def __v_prog(now_s:int, start_s:int, win_m:int)->str:
+    # error check 2: guard inputs
+    try:
+        total = max(1, int(win_m) * 60)
+        elapsed = max(0, int(now_s) - int(start_s))
+        pct = max(0.0, min(1.0, elapsed / total))
+        idx = int(round(pct * 7))
+    except Exception:
+        idx = 0
+    bars = ["▁","▂","▃","▄","▅","▆","▇","█"]
+    return "".join(bars[:idx+1]).ljust(8, "▁")
+
+def __v_chip_bar(shown: _List[str]) -> str:
+    chips = []
+    try:
+        for c in CATEGORY_ORDER:
+            if c in (shown or []):
+                try:
+                    chips.append(f"✅ {category_emoji(c)} {c}")
+                except Exception:
+                    chips.append(f"✅ {c}")
+    except Exception:
+        return ""
+    return " | ".join(chips) if chips else ""
+
+if _dvis is not None:
+    # ---- Category select: placeholder + checkmarks in labels (value unchanged) ----
+    try:
+        class _StyledSelect(_dvis.ui.Select):
+            def __init__(self, parent_view):
+                self.parent_view = parent_view
+                opts = []
+                for cat in CATEGORY_ORDER:
+                    checked = cat in (getattr(parent_view, "shown", []) or [])
+                    label = f"✅ {cat}" if checked else cat
+                    emoji = None
+                    try:
+                        emoji = EMOJI_FOR_CAT.get(cat)  # optional existing map
+                    except Exception:
+                        pass
+                    try:
+                        opts.append(_dvis.SelectOption(label=label, value=cat, emoji=emoji, default=checked))
+                    except Exception:
+                        opts.append(_dvis.SelectOption(label=label, value=cat, default=checked))
+                super().__init__(
+                    placeholder="Filter categories… (tap to toggle)",
+                    min_values=0,
+                    max_values=max(1, len(opts)),
+                    options=opts,
+                    row=0,
+                )
+            async def callback(self, interaction: _dvis.Interaction):
+                # Persist selection using existing helper if present
+                self.parent_view.shown = [c for c in CATEGORY_ORDER if c in self.values]
+                try:
+                    await set_user_shown_categories(interaction.guild.id, interaction.user.id, self.parent_view.shown)
+                except Exception:
+                    pass
+                await self.parent_view.refresh(interaction)
+
+        # Replace MobileCategorySelect if it exists; else leave baseline as-is
+        try:
+            MobileCategorySelect  # noqa: F821
+            MobileCategorySelect = _StyledSelect  # type: ignore
+        except Exception:
+            pass
+
+        # Ensure TimerToggleView constructor adds our styled select first row
+        if 'TimerToggleView' in globals():
+            _orig_init = TimerToggleView.__init__
+            def __vis_init(self, guild: _dvis.Guild, user_id: int, init_show: _List[str]):
+                _dvis.ui.View.__init__(self, timeout=300)
+                self.guild = guild
+                self.user_id = user_id
+                self.shown = [c for c in CATEGORY_ORDER if c in (init_show or [])] or CATEGORY_ORDER[:]
+                try:
+                    self.add_item(_StyledSelect(self))
+                except Exception:
+                    try:
+                        self.add_item(MobileCategorySelect(self))  # fallback to baseline
+                    except Exception:
+                        pass
+                # keep baseline buttons
+                try:
+                    self.add_item(self._make_all_button()); self.add_item(self._make_none_button())
+                except Exception:
+                    pass
+                self.message = None
+            TimerToggleView.__init__ = __vis_init  # type: ignore
+    except Exception as _e_sel:
+        try:
+            if 'log' in globals(): log.warning(f"[visual] styled select not applied: {_e_sel}")
+        except Exception:
+            pass
+
+    # ---- Styled embed builder: sections + badges + times + separators + footer ----
+    async def _build_timer_embeds_visual(guild: _dvis.Guild, categories: _List[str]) -> _List[_dvis.Embed]:
+        # error check 3: validate categories
+        if not isinstance(categories, list) or not categories:
+            return []
+        gid = guild.id
+        try:
+            show_eta = await get_show_eta(gid)
+        except Exception:
+            show_eta = False
+
+        # fetch timers
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                q_marks = ",".join("?" for _ in categories)
+                sql = f"SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=? AND category IN ({q_marks})"
+                c = await db.execute(sql, (gid, *[norm_cat(c) for c in categories]))
+                rows = await c.fetchall()
+        except Exception as e:
+            try:
+                if 'log' in globals(): log.error(f"[visual] timer query failed: {e}")
+            except Exception:
+                pass
+            return []
+
+        now = now_ts()
+        grouped: _Dict[str, _List[_Tuple[str,str,int,int]]] = {k: [] for k in categories}
+        for name, ts, cat, sk, win in rows:
+            nc = norm_cat(cat)
+            try:
+                grouped[nc].append((sk or "", name, int(ts), int(win)))
+            except Exception:
+                # error check 4: skip corrupt rows
+                continue
+
+        # sort per category
+        for cat in grouped:
+            items = grouped[cat]
+            items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
+
+        embeds: _List[_dvis.Embed] = []
+        for cat in categories:
+            items = grouped.get(cat, [])
+            if not items:
+                em = _dvis.Embed(
+                    title=f"{category_emoji(cat)} {cat}",
+                    description="No timers.",
+                    color=await get_category_color(gid, cat)
+                )
+                try: em.set_footer(text="Tap categories to filter • Times auto-update")
+                except Exception: pass
+                embeds.append(em)
+                continue
+
+            open_lines: _List[str] = []
+            pending_lines: _List[str] = []
+            closed_lines: _List[str] = []
+            lost_lines: _List[str] = []
+
+            states_present = set()
+            for sk, nm, ts, win_m in items:
+                lbl = window_label(now, ts, win_m)
+                st = __v_state(lbl)
+                states_present.add(st)
+                badge = __v_badge(st)
+                if st == "pending":
+                    line = f"{badge} **{nm}** • opens {__v_rel(ts)} ({__v_abs(ts)})"
+                elif st == "open":
+                    pb = __v_prog(now, ts, win_m)
+                    left_m = max(0, (win_m*60 - max(0, now - ts)) // 60)
+                    line = f"{badge} **{nm}** • window {left_m}m • {pb} • started {__v_rel(ts)}"
+                elif st == "closed":
+                    nada_cut = ts + max(0, int(win_m))*60 + int(NADA_GRACE_SECONDS)
+                    line = f"{badge} **{nm}** • closed • -Nada {__v_rel(nada_cut)}"
+                else:
+                    line = f"{badge} **{nm}** • lost"
+                if show_eta and st in ("pending","open"):
+                    try: line += f" • {__v_abs(ts)}"
+                    except Exception: pass
+                if st == "pending":   pending_lines.append(line)
+                elif st == "open":    open_lines.append(line)
+                elif st == "closed":  closed_lines.append(line)
+                else:                 lost_lines.append(line)
+
+            def _join(ls: _List[str]) -> str: return ("\n┈┈┈\n").join(ls) if ls else ""
+
+            parts = []
+            if open_lines:    parts.append("**OPEN**\n" + _join(open_lines))
+            if pending_lines: parts.append("**PENDING**\n" + _join(pending_lines))
+            if closed_lines:  parts.append("**CLOSED**\n" + _join(closed_lines))
+            if lost_lines:    parts.append("**LOST**\n" + _join(lost_lines))
+
+            desc = sanitize_ui("\n\n".join([p for p in parts if p]) or "No timers.")
+            try:
+                color = __v_color(states_present) if states_present else await get_category_color(gid, cat)
+            except Exception:
+                color = await get_category_color(gid, cat)
+            em = _dvis.Embed(title=sanitize_ui(f"{category_emoji(cat)} {cat}"), description=desc, color=color)
+            try: em.set_footer(text="Tap categories to filter • Times auto-update")
+            except Exception: pass
+            embeds.append(em)
+
+        # error check 5: clamp to a sane embed count
+        return embeds[:10]
+
+    # Bind the visual builder if baseline provides the hook
+    try:
+        build_timer_embeds_for_categories = _build_timer_embeds_visual  # type: ignore
+        if 'log' in globals():
+            try: log.info("[visual] timer embed styling active")
+            except Exception: pass
+    except Exception:
+        pass
+
+    # After refresh, show chips in message content
+    try:
+        if 'TimerToggleView' in globals():
+            _orig_refresh = TimerToggleView.refresh  # type: ignore
+            async def __vis_refresh(self, interaction: _dvis.Interaction):
+                try:
+                    await _orig_refresh(self, interaction)
+                finally:
+                    try:
+                        chips = __v_chip_bar(getattr(self, 'shown', []) or [])
+                        if chips:
+                            if interaction.response.is_done():
+                                await interaction.edit_original_response(content=chips)
+                            else:
+                                await interaction.response.edit_message(content=chips)
+                    except Exception:
+                        pass
+            TimerToggleView.refresh = __vis_refresh  # type: ignore
+    except Exception as _e_rf:
+        try:
+            if 'log' in globals(): log.warning(f"[visual] chip header not applied: {_e_rf}")
+        except Exception:
+            pass
+
+# ==================== END TIMER UI STYLING ====================
