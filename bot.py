@@ -1644,6 +1644,26 @@ class TimerToggleView(discord.ui.View):
             await interaction.edit_original_response(content=content, embeds=embeds, view=self)
         else:
             await interaction.response.edit_message(content=content, embeds=embeds, view=self)
+                # Ensure defaults reflect persisted prefs
+                try:
+                    uid = getattr(interaction.user, 'id', None)
+                    if uid is not None and hasattr(self, 'load_user_timer_prefs'):
+                        prefs = await self.load_user_timer_prefs(uid)
+                        self.current_categories = list(prefs or [])
+                    # If select components exist, set option.default using current_categories
+                    for item in list(getattr(self, 'children', []) or []):
+                        try:
+                            from discord.ui import Select as _Select
+                            if isinstance(item, _Select):
+                                for _opt in getattr(item, 'options', []) or []:
+                                    _val = getattr(_opt, 'value', None)
+                                    _opt.default = (_val in getattr(self, 'current_categories', []))
+                        except Exception:
+                            continue
+                except Exception as e:
+                    import logging
+                    logging.exception("refresh default sync failed: %s", e)
+    
 
 class ToggleButton(discord.ui.Button):
     def __init__(self, label: str, style: discord.ButtonStyle, cat: str, row: int):
@@ -3587,6 +3607,40 @@ class AltClassSelect(discord.ui.Select):
         await interaction.response.edit_message(content=self.view._summary_text(), view=self.view)
 
 # Optional alt modal (name + level only; class comes from dropdown)
+                # --- live default sync + guards ---
+                try:
+                    view = getattr(self, 'view', None)
+                    if view is None:
+                        await interaction.response.send_message("View missing. Reopen /timers.", ephemeral=True)
+                        return
+                    # Determine current selection values
+                    selected_values = []
+                    try:
+                        # discord.py exposes selected values via self.values inside callback
+                        selected_values = list(getattr(self, 'values', [])) or []
+                    except Exception:
+                        pass
+                    # Fallback: read from a persisted attribute on view if present
+                    if not selected_values:
+                        selected_values = list(getattr(view, 'current_categories', [])) or []
+                    # Sanitize against known categories if available
+                    known = set(getattr(view, 'all_categories', [])) if hasattr(view, 'all_categories') else set()
+                    if known:
+                        selected_values = [v for v in selected_values if v in known]
+                    # Apply defaults on the fly so the same menu reflects the new state
+                    try:
+                        for _opt in getattr(self, 'options', []) or []:
+                            _val = getattr(_opt, 'value', None)
+                            if _val is not None:
+                                _opt.default = (_val in selected_values)
+                    except Exception as _e:
+                        import logging as _logging
+                        _logging.exception("select-default-sync failed: %s", _e)
+                except Exception as e:
+                    import logging
+                    logging.exception("timer select guard failed: %s", e)
+                # --- end live default sync ---
+    
 class AltModal(discord.ui.Modal, title="Add Alt (optional)"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
     alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
@@ -3943,6 +3997,40 @@ class ClassSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         self.view.selected_class = self.values[0]
         await interaction.response.edit_message(content=f"Selected class: **{self.view.selected_class}**", view=self.view)
+                # --- live default sync + guards ---
+                try:
+                    view = getattr(self, 'view', None)
+                    if view is None:
+                        await interaction.response.send_message("View missing. Reopen /timers.", ephemeral=True)
+                        return
+                    # Determine current selection values
+                    selected_values = []
+                    try:
+                        # discord.py exposes selected values via self.values inside callback
+                        selected_values = list(getattr(self, 'values', [])) or []
+                    except Exception:
+                        pass
+                    # Fallback: read from a persisted attribute on view if present
+                    if not selected_values:
+                        selected_values = list(getattr(view, 'current_categories', [])) or []
+                    # Sanitize against known categories if available
+                    known = set(getattr(view, 'all_categories', [])) if hasattr(view, 'all_categories') else set()
+                    if known:
+                        selected_values = [v for v in selected_values if v in known]
+                    # Apply defaults on the fly so the same menu reflects the new state
+                    try:
+                        for _opt in getattr(self, 'options', []) or []:
+                            _val = getattr(_opt, 'value', None)
+                            if _val is not None:
+                                _opt.default = (_val in selected_values)
+                    except Exception as _e:
+                        import logging as _logging
+                        _logging.exception("select-default-sync failed: %s", _e)
+                except Exception as e:
+                    import logging
+                    logging.exception("timer select guard failed: %s", e)
+                # --- end live default sync ---
+    
 
 class RosterStartView(discord.ui.View):
     def __init__(self):
@@ -4039,6 +4127,40 @@ class AltClassSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         self.view.selected_alt_class = self.values[0]
         await interaction.response.edit_message(content=self.view._summary_text(), view=self.view)
+                # --- live default sync + guards ---
+                try:
+                    view = getattr(self, 'view', None)
+                    if view is None:
+                        await interaction.response.send_message("View missing. Reopen /timers.", ephemeral=True)
+                        return
+                    # Determine current selection values
+                    selected_values = []
+                    try:
+                        # discord.py exposes selected values via self.values inside callback
+                        selected_values = list(getattr(self, 'values', [])) or []
+                    except Exception:
+                        pass
+                    # Fallback: read from a persisted attribute on view if present
+                    if not selected_values:
+                        selected_values = list(getattr(view, 'current_categories', [])) or []
+                    # Sanitize against known categories if available
+                    known = set(getattr(view, 'all_categories', [])) if hasattr(view, 'all_categories') else set()
+                    if known:
+                        selected_values = [v for v in selected_values if v in known]
+                    # Apply defaults on the fly so the same menu reflects the new state
+                    try:
+                        for _opt in getattr(self, 'options', []) or []:
+                            _val = getattr(_opt, 'value', None)
+                            if _val is not None:
+                                _opt.default = (_val in selected_values)
+                    except Exception as _e:
+                        import logging as _logging
+                        _logging.exception("select-default-sync failed: %s", _e)
+                except Exception as e:
+                    import logging
+                    logging.exception("timer select guard failed: %s", e)
+                # --- end live default sync ---
+    
 
 class AltModal(discord.ui.Modal, title="Add Alt"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
@@ -5651,122 +5773,3 @@ except Exception:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-# ==================== TIMER LIVE-SELECTION PERSISTENCE PATCH (2025-09-29) ====================
-# Purpose: Ensure the /timers category selections persist immediately and the select menu defaults
-# reflect the latest state without needing to dismiss the message.
-try:
-    import discord as _dm_fix
-    from typing import List as _List
-    _HAS_DM = True
-except Exception:
-    _HAS_DM = False
-
-if _HAS_DM and 'TimerToggleView' in globals():
-    # 1) Wrap TimerToggleView.refresh to also sync select option defaults and add guards.
-    try:
-        async def __ttv_refresh_live(self, interaction: _dm_fix.Interaction):
-            # Error check 1: guard guild presence
-            gid = getattr(getattr(interaction, 'guild', None), 'id', None)
-            if gid is None:
-                try:
-                    if 'log' in globals(): log.warning("[timers] refresh called without guild")
-                except Exception:
-                    pass
-                # Try a safe ephemeral notify
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message("Use this in a server.", ephemeral=True)
-                except Exception:
-                    pass
-                return
-            # Sanitize shown against CATEGORY_ORDER (Error check 2)
-            try:
-                self.shown = [c for c in CATEGORY_ORDER if c in (self.shown or [])]
-            except Exception as e:
-                try:
-                    if 'log' in globals(): log.warning(f"[timers] sanitize shown failed: {e}")
-                except Exception:
-                    pass
-            # Persist selection with guard (Error check 3)
-            try:
-                await set_user_shown_categories(gid, self.user_id, self.shown)
-            except Exception as e:
-                try:
-                    if 'log' in globals(): log.warning(f"[timers] persist shown failed: {e}")
-                except Exception:
-                    pass
-            # Sync any Select defaults to reflect current shown
-            try:
-                for child in getattr(self, 'children', []):
-                    if isinstance(child, _dm_fix.ui.Select):
-                        for opt in getattr(child, 'options', []) or []:
-                            try:
-                                opt.default = (opt.value in self.shown)
-                            except Exception:
-                                # ignore per-option errors
-                                pass
-            except Exception as e:
-                try:
-                    if 'log' in globals(): log.warning(f"[timers] sync defaults failed: {e}")
-                except Exception:
-                    pass
-            # Build embeds and edit in-place
-            embeds = await build_timer_embeds_for_categories(self.guild, self.shown)
-            content = f"**Categories shown:** {', '.join(self.shown) if self.shown else '(none)'}"
-            try:
-                if interaction.response.is_done():
-                    await interaction.edit_original_response(content=content, embeds=embeds, view=self)
-                else:
-                    await interaction.response.edit_message(content=content, embeds=embeds, view=self)
-            except Exception as e:
-                try:
-                    if 'log' in globals(): log.warning(f"[timers] edit failed: {e}")
-                except Exception:
-                    pass
-        # Bind override
-        TimerToggleView.refresh = __ttv_refresh_live  # type: ignore
-    except Exception as _e_ttv_refresh:
-        try:
-            if 'log' in globals(): log.warning(f"[timers] live refresh hook failed: {_e_ttv_refresh}")
-        except Exception:
-            pass
-
-    # 2) If a MobileCategorySelect exists, upgrade its callback to filter values, persist, and resync defaults.
-    try:
-        # Find the existing class in globals if present
-        _mcs = globals().get('MobileCategorySelect', None)
-        if _mcs is not None and isinstance(_mcs, type):
-            _orig_cb = getattr(_mcs, 'callback', None)
-            async def _mcs_callback_live(self, interaction: _dm_fix.Interaction):
-                # Filter incoming values to known categories
-                vals = [v for v in getattr(self, 'values', []) if v in CATEGORY_ORDER]
-                self.parent_view.shown = [c for c in CATEGORY_ORDER if c in vals]
-                # Persist with guard
-                try:
-                    gid = interaction.guild.id
-                    await set_user_shown_categories(gid, interaction.user.id, self.parent_view.shown)
-                except Exception as e:
-                    try:
-                        if 'log' in globals(): log.warning(f"[timers] select persist failed: {e}")
-                    except Exception:
-                        pass
-                # Resync defaults on the current select so reopening reflects latest
-                try:
-                    for opt in getattr(self, 'options', []) or []:
-                        try:
-                            opt.default = (opt.value in self.parent_view.shown)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                # Delegate to view refresh
-                await self.parent_view.refresh(interaction)
-            _mcs.callback = _mcs_callback_live  # type: ignore
-    except Exception as _e_mcs:
-        try:
-            if 'log' in globals(): log.warning(f"[timers] live mobile select hook failed: {_e_mcs}")
-        except Exception:
-            pass
-# ==================== END TIMER LIVE-SELECTION PERSISTENCE PATCH ====================
