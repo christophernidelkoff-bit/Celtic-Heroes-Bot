@@ -5686,25 +5686,25 @@ if __name__ == "__main__":
 
 
 
-# ==================== COMPACT TIMER VISUALS (monospace + separators + timezone tags) ====================
-# Visual only. No schema or command changes. Builder swap is soft and respects baseline hooks.
+# ==================== VISUAL COMPACT TIMERS (separators • monospace • local time) ====================
+# Visual-only overlay. No schema or business logic changes. Baseline remains intact.
+# Features: thin separators (┈┈┈), monospaced aligned columns in a code block, open-window progress bar,
+# and Discord <t:...> tags for viewer-local time. Ensures activation via builder rebind + refresh patch.
 
 try:
-    import discord as _dvx
+    import discord as _dv
     from typing import List as _List, Dict as _Dict, Tuple as _Tuple
 except Exception:
-    _dvx = None
+    _dv = None
 
-def _cv_pad(s: str, width: int) -> str:
+def _vc_pad(s: str, w: int) -> str:
     try:
         s = str(s)
-        if len(s) > width:
-            return s[:max(0,width-1)] + "…"
-        return s.ljust(width)
+        return s[:w-1] + "…" if len(s) > w else s.ljust(w)
     except Exception:
-        return (s or "")[:width]
+        return (s or "")[:w]
 
-def _cv_prog(now_s: int, start_s: int, win_m: int) -> str:
+def _vc_prog(now_s: int, start_s: int, win_m: int) -> str:
     try:
         total = max(1, int(win_m) * 60)
         elapsed = max(0, int(now_s) - int(start_s))
@@ -5715,15 +5715,15 @@ def _cv_prog(now_s: int, start_s: int, win_m: int) -> str:
     bars = ["▁","▂","▃","▄","▅","▆","▇","█"]
     return "".join(bars[:idx+1]).ljust(8, "▁")
 
-def _cv_abs(ts:int)->str:
-    try: return f"<t:{int(ts)}:t>"  # local time for viewer
+def _vc_abs_local(ts:int)->str:
+    try: return f"<t:{int(ts)}:t>"  # viewer's local time
     except Exception: return ""
 
-def _cv_rel(ts:int)->str:
+def _vc_rel(ts:int)->str:
     try: return f"<t:{int(ts)}:R>"
     except Exception: return ""
 
-async def _build_timer_embeds_compact(guild: "_dvx.Guild", categories: "_List[str]") -> "_List[_dvx.Embed]":
+async def _build_timer_embeds_compact(guild: "_dv.Guild", categories: "_List[str]") -> "_List[_dv.Embed]":
     gid = guild.id
     now = now_ts()
     try:
@@ -5731,7 +5731,7 @@ async def _build_timer_embeds_compact(guild: "_dvx.Guild", categories: "_List[st
     except Exception:
         show_eta = False
 
-    # fetch once
+    # Query once
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             q = ",".join("?" for _ in categories)
@@ -5740,11 +5740,11 @@ async def _build_timer_embeds_compact(guild: "_dvx.Guild", categories: "_List[st
             rows = await c.fetchall()
     except Exception as e:
         try:
-            if 'log' in globals(): log.error(f"[compact] query failed: {e}")
+            if 'log' in globals(): log.error(f"[visual] query failed: {e}")
         except Exception: pass
         return []
 
-    # bucket per category
+    # Group
     grouped: _Dict[str, _List[_Tuple[str,str,int,int]]] = {k: [] for k in categories}
     for name, ts, cat, sk, win in rows:
         try:
@@ -5752,85 +5752,102 @@ async def _build_timer_embeds_compact(guild: "_dvx.Guild", categories: "_List[st
         except Exception:
             continue
 
-    embeds: _List[_dvx.Embed] = []
+    embeds: _List[_dv.Embed] = []
     for cat in categories:
         items = grouped.get(cat, [])
         items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
         if not items:
-            em = _dvx.Embed(
+            em = _dv.Embed(
                 title=f"{category_emoji(cat)} {cat}",
                 description="No timers.",
                 color=await get_category_color(gid, cat)
             )
+            try: em.set_footer(text="Times show in your local timezone")
+            except Exception: pass
             embeds.append(em)
             continue
 
         lines = []
+        missing_count = 0
         for sk, nm, ts, win_m in items:
             lbl = window_label(now, ts, win_m).lower()
-            # state
             if "-nada" in lbl:
-                state = "LOST "
-                when = ""
-                abs_t = ""
-                prog = ""
-            elif "closed" in lbl:
-                state = "CLOSE"
-                nada_cut = ts + max(0, int(win_m))*60 + int(NADA_GRACE_SECONDS)
-                when = "→ " + _cv_rel(nada_cut)
-                abs_t = _cv_abs(nada_cut)
-                prog = ""
-            elif "(open" in lbl or "open)" in lbl:
-                state = "OPEN "
+                missing_count += 1
+                continue
+
+            if "(open" in lbl or "open)" in lbl:
                 end_ts = ts + max(0, int(win_m))*60
                 left_m = max(0, (end_ts - now)//60)
+                state = "OPEN "
                 when = f"{left_m:>3}m"
-                abs_t = _cv_abs(end_ts) if show_eta else ""
-                prog = _cv_prog(now, ts, win_m)
+                abs_col = _vc_abs_local(end_ts) if show_eta else ""
+                prog = _vc_prog(now, ts, win_m)
+            elif "closed" in lbl:
+                nada_cut = ts + max(0, int(win_m))*60 + int(NADA_GRACE_SECONDS)
+                state = "CLOSE"
+                when = "→ " + _vc_rel(nada_cut)
+                abs_col = _vc_abs_local(nada_cut) if show_eta else ""
+                prog = ""
             else:
                 state = "PEND "
-                when = "→ " + _cv_rel(ts)
-                abs_t = _cv_abs(ts) if show_eta else ""
+                when = "→ " + _vc_rel(ts)
+                abs_col = _vc_abs_local(ts) if show_eta else ""
                 prog = ""
 
-            # columns: Name(20) | State(5) | When(>12) | Abs(local) | Progress
-            col_name = _cv_pad(nm, 20)
-            col_state = _cv_pad(state, 5)
-            col_when = _cv_pad(when, 12)
-            col_abs  = _cv_pad(abs_t, 16)
+            # Columns: Name(22) | State(5) | When(14) | Abs(18) | Progress
+            col_name  = _vc_pad(nm, 22)
+            col_state = _vc_pad(state, 5)
+            col_when  = _vc_pad(when, 14)
+            col_abs   = _vc_pad(abs_col, 18)
             row = f"{col_name} {col_state} {col_when} {col_abs} {prog}".rstrip()
             lines.append(row)
 
-        # join with thin separators inside a fenced code block
+        if missing_count:
+            lines.append(f"Missing: {missing_count}")
+
         sep = "┈┈┈"
         block = "```\n" + f"\n{sep}\n".join(lines) + "\n```"
 
-        em = _dvx.Embed(
+        em = _dv.Embed(
             title=f"{category_emoji(cat)} {cat}",
-            description=sanitize_ui(block)[:4000],  # headroom under 4096
+            description=sanitize_ui(block)[:4000],
             color=await get_category_color(gid, cat)
         )
-        em.set_footer(text="Times show in your local timezone")
+        try: em.set_footer(text="Times show in your local timezone")
+        except Exception: pass
         embeds.append(em)
 
     return embeds[:10]
 
-# Bind compact builder if possible, else leave baseline intact.
-try:
-    # Preferred hook
-    build_timer_embeds_for_categories = _build_timer_embeds_compact  # type: ignore
-    if 'log' in globals():
-        try: log.info("[compact] monospaced timer view active")
-        except Exception: pass
-except Exception:
-    # Best-effort: rebind any build function that matches pattern
+# Bind compact builder and ensure refresh applies it
+if _dv is not None:
+    try:
+        build_timer_embeds_for_categories = _build_timer_embeds_compact  # type: ignore
+    except Exception:
+        pass
     try:
         for _n, _f in list(globals().items()):
             if callable(_f) and isinstance(_n, str) and _n.lower().startswith("build_timer_embeds"):
                 globals()[_n] = _build_timer_embeds_compact
-        if 'log' in globals():
-            try: log.info("[compact] bound to build_timer_embeds*")
-            except Exception: pass
     except Exception:
         pass
-# ==================== END COMPACT TIMER VISUALS ====================
+    try:
+        if 'TimerToggleView' in globals():
+            _orig_refresh = TimerToggleView.refresh  # type: ignore
+            async def __vc_refresh(self, interaction: _dv.Interaction):
+                try:
+                    await _orig_refresh(self, interaction)
+                finally:
+                    try:
+                        cats = getattr(self, 'shown', []) or CATEGORY_ORDER[:]
+                        ems = await _build_timer_embeds_compact(interaction.guild, cats)
+                        if interaction.response.is_done():
+                            await interaction.edit_original_response(embeds=ems)
+                        else:
+                            await interaction.response.edit_message(embeds=ems)
+                    except Exception:
+                        pass
+            TimerToggleView.refresh = __vc_refresh  # type: ignore
+    except Exception:
+        pass
+# ==================== END VISUAL COMPACT TIMERS ====================
