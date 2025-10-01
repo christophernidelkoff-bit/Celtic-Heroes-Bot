@@ -3678,13 +3678,33 @@ class RosterConfirmView(discord.ui.View):
         except Exception as e:
             log.warning(f"[roster] upsert failed: {e}")
             return await interaction.response.send_message("Could not save your info.", ephemeral=True)
-        rid = await get_auto_member_role_id(gid)
-        if rid:
-            role = guild.get_role(rid)
-            if role:
-                try: await user.add_roles(role, reason="Roster intake complete")
-                except Exception as e: log.warning(f"[roster] role grant failed: {e}")
-        roster_ch_id = await get_roster_channel_id(gid)
+        
+rid = await get_auto_member_role_id(gid)
+if rid:
+    role = guild.get_role(rid)
+    if role:
+        me = guild.me
+        try:
+            if me and me.guild_permissions.manage_roles and role < me.top_role and role != guild.default_role and role not in user.roles:
+                await user.add_roles(role, reason="Roster intake complete")
+        except Exception as e:
+            log.warning(f"[roster] role grant failed: {e}")
+
+# Class-based role grant
+try:
+    class_rid = await get_class_role_id(gid, cls)
+except Exception as e:
+    class_rid = None
+    log.warning(f"[roster] class role lookup failed: {e}")
+if class_rid:
+    crole = guild.get_role(class_rid)
+    me = guild.me
+    if crole and me and me.guild_permissions.manage_roles and crole < me.top_role and crole != guild.default_role and crole not in user.roles:
+        try:
+            await user.add_roles(crole, reason=f"Roster class {cls}")
+        except Exception as e:
+            log.warning(f"[roster] class role grant failed: {e}")
+(gid)
         if roster_ch_id:
             ch = guild.get_channel(roster_ch_id)
             if can_send(ch):
@@ -3717,6 +3737,61 @@ async def _cfg_set_int(gid: int, field: str, val: int):
             (gid, val)
         ); await db.commit()
 
+
+# ---- Class role config helpers ----
+_CLASS_ROLE_COLUMNS = {
+    "Ranger": "class_role_ranger_id",
+    "Rogue": "class_role_rogue_id",
+    "Warrior": "class_role_warrior_id",
+    "Mage": "class_role_mage_id",
+    "Druid": "class_role_druid_id",
+}
+
+async def _cfg_ensure_column(field: str, coltype: str = "INTEGER"):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
+        c = await db.execute("PRAGMA table_info(guild_config)")
+        cols = {row[1] for row in await c.fetchall()}
+        if field not in cols:
+            await db.execute(f"ALTER TABLE guild_config ADD COLUMN {field} {coltype} DEFAULT NULL")
+            await db.commit()
+
+async def _cfg_set_int_nullable(gid: int, field: str, val: int | None):
+    await _cfg_ensure_column(field, "INTEGER")
+    async with aiosqlite.connect(DB_PATH) as db:
+        if val is None:
+            await db.execute("INSERT INTO guild_config (guild_id) VALUES (?) ON CONFLICT(guild_id) DO NOTHING", (gid,))
+            await db.execute(f"UPDATE guild_config SET {field}=NULL WHERE guild_id=?", (gid,))
+        else:
+            await db.execute(
+                f"INSERT INTO guild_config (guild_id,{field}) VALUES (?,?) "
+                f"ON CONFLICT(guild_id) DO UPDATE SET {field}=excluded.{field}",
+                (gid, int(val))
+            )
+        await db.commit()
+
+async def set_class_role_id(gid: int, class_name: str, rid: int | None):
+    from typing import cast
+    cls = _norm_class(class_name)
+    field = _CLASS_ROLE_COLUMNS.get(cls)
+    if not field:
+        return
+    await _cfg_set_int_nullable(gid, field, rid)
+
+async def get_class_role_id(gid: int, class_name: str):
+    cls = _norm_class(class_name)
+    field = _CLASS_ROLE_COLUMNS.get(cls)
+    if not field:
+        return None
+    # Safe read even if column was not created yet
+    try:
+        return await _cfg_get_int(gid, field)
+    except Exception:
+        try:
+            await _cfg_ensure_column(field, "INTEGER")
+        except Exception:
+            pass
+        return None
 async def get_welcome_channel_id(gid: int): return await _cfg_get_int(gid, "welcome_channel_id")
 async def set_welcome_channel_id(gid: int, cid: int): return await _cfg_set_int(gid, "welcome_channel_id", int(cid))
 async def get_roster_channel_id(gid: int): return await _cfg_get_int(gid, "roster_channel_id")
@@ -3732,7 +3807,7 @@ async def __cfg_helpers_migrate_on_ready():
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
             needed = ["welcome_channel_id","roster_channel_id","auto_member_role_id","welcome_message_id",
-                      "heartbeat_channel_id","uptime_minutes"]
+                      "heartbeat_channel_id","uptime_minutes","class_role_ranger_id","class_role_rogue_id","class_role_warrior_id","class_role_mage_id","class_role_druid_id"]
             c = await db.execute("PRAGMA table_info(guild_config)")
             cols = {row[1] for row in await c.fetchall()}
             for col in needed:
@@ -3808,6 +3883,24 @@ async def setup_role(interaction: discord.Interaction, role: discord.Role):
     await set_auto_member_role_id(interaction.guild.id, role.id)
     await interaction.response.send_message(f"Auto role set to {role.mention}.", ephemeral=True)
 
+@_ac_cfg.command(name="setup-class-role", description="Grant a role based on roster class at join")
+@_ac_cfg.checks.has_permissions(manage_roles=True)
+@_ac_cfg.describe(class_name="One of Ranger, Rogue, Warrior, Mage, Druid",
+                  role="Role to grant for that class (omit with clear=true to remove)",
+                  clear="Set true to remove the mapping")
+async def setup_class_role(interaction: discord.Interaction, class_name: str, role: Optional[discord.Role] = None, clear: Optional[bool] = False):
+    gid = interaction.guild.id if interaction.guild else None
+    if not gid:
+        return await interaction.response.send_message("Guild not found.", ephemeral=True)
+    cls = _norm_class(class_name)
+    if clear:
+        await set_class_role_id(gid, cls, None)
+        return await interaction.response.send_message(f"Cleared class role for **{cls}**.", ephemeral=True)
+    if role is None:
+        return await interaction.response.send_message("Provide a role or set clear=true.", ephemeral=True)
+    await set_class_role_id(gid, cls, role.id)
+    await interaction.response.send_message(f"Mapped **{cls}** → {role.mention}.", ephemeral=True)
+
 @_ac_cfg.command(name="welcome-post", description="Post or refresh the Start Roster button message in the welcome channel")
 @_ac_cfg.checks.has_permissions(manage_guild=True)
 async def welcome_post_cmd(interaction: discord.Interaction):
@@ -3880,7 +3973,7 @@ async def sync_now(interaction: discord.Interaction):
 # Binder
 @bot.listen("on_ready")
 async def __bind_config_commands_and_sync():
-    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime, sync_now]
+    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime, sync_now, setup_class_role]
     for g in bot.guilds:
         for cmd in cmds:
             try:
@@ -5683,171 +5776,3 @@ except Exception:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-# ==================== VISUAL COMPACT TIMERS (separators • monospace • local time) ====================
-# Visual-only overlay. No schema or business logic changes. Baseline remains intact.
-# Features: thin separators (┈┈┈), monospaced aligned columns in a code block, open-window progress bar,
-# and Discord <t:...> tags for viewer-local time. Ensures activation via builder rebind + refresh patch.
-
-try:
-    import discord as _dv
-    from typing import List as _List, Dict as _Dict, Tuple as _Tuple
-except Exception:
-    _dv = None
-
-def _vc_pad(s: str, w: int) -> str:
-    try:
-        s = str(s)
-        return s[:w-1] + "…" if len(s) > w else s.ljust(w)
-    except Exception:
-        return (s or "")[:w]
-
-def _vc_prog(now_s: int, start_s: int, win_m: int) -> str:
-    try:
-        total = max(1, int(win_m) * 60)
-        elapsed = max(0, int(now_s) - int(start_s))
-        pct = max(0.0, min(1.0, elapsed / total))
-        idx = int(round(pct * 7))
-    except Exception:
-        idx = 0
-    bars = ["▁","▂","▃","▄","▅","▆","▇","█"]
-    return "".join(bars[:idx+1]).ljust(8, "▁")
-
-def _vc_abs_local(ts:int)->str:
-    try: return f"<t:{int(ts)}:t>"  # viewer's local time
-    except Exception: return ""
-
-def _vc_rel(ts:int)->str:
-    try: return f"<t:{int(ts)}:R>"
-    except Exception: return ""
-
-async def _build_timer_embeds_compact(guild: "_dv.Guild", categories: "_List[str]") -> "_List[_dv.Embed]":
-    gid = guild.id
-    now = now_ts()
-    try:
-        show_eta = await get_show_eta(gid)
-    except Exception:
-        show_eta = False
-
-    # Query once
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            q = ",".join("?" for _ in categories)
-            sql = f"SELECT name,next_spawn_ts,category,sort_key,window_minutes FROM bosses WHERE guild_id=? AND category IN ({q})"
-            c = await db.execute(sql, (gid, *[norm_cat(c) for c in categories]))
-            rows = await c.fetchall()
-    except Exception as e:
-        try:
-            if 'log' in globals(): log.error(f"[visual] query failed: {e}")
-        except Exception: pass
-        return []
-
-    # Group
-    grouped: _Dict[str, _List[_Tuple[str,str,int,int]]] = {k: [] for k in categories}
-    for name, ts, cat, sk, win in rows:
-        try:
-            grouped[norm_cat(cat)].append((sk or "", name, int(ts), int(win)))
-        except Exception:
-            continue
-
-    embeds: _List[_dv.Embed] = []
-    for cat in categories:
-        items = grouped.get(cat, [])
-        items.sort(key=lambda x: (natural_key(x[0]), natural_key(x[1])))
-        if not items:
-            em = _dv.Embed(
-                title=f"{category_emoji(cat)} {cat}",
-                description="No timers.",
-                color=await get_category_color(gid, cat)
-            )
-            try: em.set_footer(text="Times show in your local timezone")
-            except Exception: pass
-            embeds.append(em)
-            continue
-
-        lines = []
-        missing_count = 0
-        for sk, nm, ts, win_m in items:
-            lbl = window_label(now, ts, win_m).lower()
-            if "-nada" in lbl:
-                missing_count += 1
-                continue
-
-            if "(open" in lbl or "open)" in lbl:
-                end_ts = ts + max(0, int(win_m))*60
-                left_m = max(0, (end_ts - now)//60)
-                state = "OPEN "
-                when = f"{left_m:>3}m"
-                abs_col = _vc_abs_local(end_ts) if show_eta else ""
-                prog = _vc_prog(now, ts, win_m)
-            elif "closed" in lbl:
-                nada_cut = ts + max(0, int(win_m))*60 + int(NADA_GRACE_SECONDS)
-                state = "CLOSE"
-                when = "→ " + _vc_rel(nada_cut)
-                abs_col = _vc_abs_local(nada_cut) if show_eta else ""
-                prog = ""
-            else:
-                state = "PEND "
-                when = "→ " + _vc_rel(ts)
-                abs_col = _vc_abs_local(ts) if show_eta else ""
-                prog = ""
-
-            # Columns: Name(22) | State(5) | When(14) | Abs(18) | Progress
-            col_name  = _vc_pad(nm, 22)
-            col_state = _vc_pad(state, 5)
-            col_when  = _vc_pad(when, 14)
-            col_abs   = _vc_pad(abs_col, 18)
-            row = f"{col_name} {col_state} {col_when} {col_abs} {prog}".rstrip()
-            lines.append(row)
-
-        if missing_count:
-            lines.append(f"Missing: {missing_count}")
-
-        sep = "┈┈┈"
-        block = "```\n" + f"\n{sep}\n".join(lines) + "\n```"
-
-        em = _dv.Embed(
-            title=f"{category_emoji(cat)} {cat}",
-            description=sanitize_ui(block)[:4000],
-            color=await get_category_color(gid, cat)
-        )
-        try: em.set_footer(text="Times show in your local timezone")
-        except Exception: pass
-        embeds.append(em)
-
-    return embeds[:10]
-
-# Bind compact builder and ensure refresh applies it
-if _dv is not None:
-    try:
-        build_timer_embeds_for_categories = _build_timer_embeds_compact  # type: ignore
-    except Exception:
-        pass
-    try:
-        for _n, _f in list(globals().items()):
-            if callable(_f) and isinstance(_n, str) and _n.lower().startswith("build_timer_embeds"):
-                globals()[_n] = _build_timer_embeds_compact
-    except Exception:
-        pass
-    try:
-        if 'TimerToggleView' in globals():
-            _orig_refresh = TimerToggleView.refresh  # type: ignore
-            async def __vc_refresh(self, interaction: _dv.Interaction):
-                try:
-                    await _orig_refresh(self, interaction)
-                finally:
-                    try:
-                        cats = getattr(self, 'shown', []) or CATEGORY_ORDER[:]
-                        ems = await _build_timer_embeds_compact(interaction.guild, cats)
-                        if interaction.response.is_done():
-                            await interaction.edit_original_response(embeds=ems)
-                        else:
-                            await interaction.response.edit_message(embeds=ems)
-                    except Exception:
-                        pass
-            TimerToggleView.refresh = __vc_refresh  # type: ignore
-    except Exception:
-        pass
-# ==================== END VISUAL COMPACT TIMERS ====================
