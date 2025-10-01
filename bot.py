@@ -3680,30 +3680,31 @@ class RosterConfirmView(discord.ui.View):
             return await interaction.response.send_message("Could not save your info.", ephemeral=True)
         rid = await get_auto_member_role_id(gid)
         if rid:
-        role = guild.get_role(rid)
-        if role:
-        me = guild.me
-        try:
-            if me and me.guild_permissions.manage_roles and role < me.top_role and role != guild.default_role and role not in user.roles:
-                await user.add_roles(role, reason="Roster intake complete")
-        except Exception as e:
-            log.warning(f"[roster] role grant failed: {e}")
+            role = guild.get_role(rid)
+            if role:
+                me = guild.me
+                try:
+                    if me and me.guild_permissions.manage_roles and role < me.top_role and role != guild.default_role and role not in user.roles:
+                        await user.add_roles(role, reason="Roster intake complete")
+                except Exception as e:
+                    log.warning(f"[roster] role grant failed: {e}")
         # Class-based role grant
         try:
-        class_rid = await get_class_role_id(gid, cls)
+            mcls = self.payload[2]
+            class_rid = await get_class_role_id(gid, mcls)
         except Exception as e:
-        class_rid = None
-        log.warning(f"[roster] class role lookup failed: {e}")
+            class_rid = None
+            log.warning(f"[roster] class role lookup failed: {e}")
         if class_rid:
-        crole = guild.get_role(class_rid)
-        me = guild.me
-        if crole and me and me.guild_permissions.manage_roles and crole < me.top_role and crole != guild.default_role and crole not in user.roles:
-        try:
-            await user.add_roles(crole, reason=f"Roster class {cls}")
-        except Exception as e:
-            log.warning(f"[roster] class role grant failed: {e}")
-        
-        roster_ch_id = await get_roster_channel_id(gid)(gid)
+            crole = guild.get_role(class_rid)
+            me = guild.me
+            if crole and me and me.guild_permissions.manage_roles and crole < me.top_role and crole != guild.default_role and crole not in user.roles:
+                try:
+                    await user.add_roles(crole, reason=f"Roster class {mcls}")
+                except Exception as e:
+                    log.warning(f"[roster] class role grant failed: {e}")
+
+        roster_ch_id = await get_roster_channel_id(gid)
         if roster_ch_id:
             ch = guild.get_channel(roster_ch_id)
             if can_send(ch):
