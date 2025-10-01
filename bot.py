@@ -3678,8 +3678,7 @@ class RosterConfirmView(discord.ui.View):
         except Exception as e:
             log.warning(f"[roster] upsert failed: {e}")
             return await interaction.response.send_message("Could not save your info.", ephemeral=True)
-        
-rid = await get_auto_member_role_id(gid)
+        rid = await get_auto_member_role_id(gid)
 if rid:
     role = guild.get_role(rid)
     if role:
@@ -3689,7 +3688,6 @@ if rid:
                 await user.add_roles(role, reason="Roster intake complete")
         except Exception as e:
             log.warning(f"[roster] role grant failed: {e}")
-
 # Class-based role grant
 try:
     class_rid = await get_class_role_id(gid, cls)
@@ -3704,7 +3702,8 @@ if class_rid:
             await user.add_roles(crole, reason=f"Roster class {cls}")
         except Exception as e:
             log.warning(f"[roster] class role grant failed: {e}")
-(gid)
+
+        roster_ch_id = await get_roster_channel_id(gid)(gid)
         if roster_ch_id:
             ch = guild.get_channel(roster_ch_id)
             if can_send(ch):
@@ -3771,7 +3770,6 @@ async def _cfg_set_int_nullable(gid: int, field: str, val: int | None):
         await db.commit()
 
 async def set_class_role_id(gid: int, class_name: str, rid: int | None):
-    from typing import cast
     cls = _norm_class(class_name)
     field = _CLASS_ROLE_COLUMNS.get(cls)
     if not field:
@@ -3783,7 +3781,6 @@ async def get_class_role_id(gid: int, class_name: str):
     field = _CLASS_ROLE_COLUMNS.get(cls)
     if not field:
         return None
-    # Safe read even if column was not created yet
     try:
         return await _cfg_get_int(gid, field)
     except Exception:
@@ -3880,8 +3877,6 @@ async def setup_roster(interaction: discord.Interaction, channel: discord.TextCh
 @_ac_cfg.command(name="setup-role", description="Set the role granted on roster submit")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
 async def setup_role(interaction: discord.Interaction, role: discord.Role):
-    await set_auto_member_role_id(interaction.guild.id, role.id)
-    await interaction.response.send_message(f"Auto role set to {role.mention}.", ephemeral=True)
 
 @_ac_cfg.command(name="setup-class-role", description="Grant a role based on roster class at join")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
@@ -3899,7 +3894,10 @@ async def setup_class_role(interaction: discord.Interaction, class_name: str, ro
     if role is None:
         return await interaction.response.send_message("Provide a role or set clear=true.", ephemeral=True)
     await set_class_role_id(gid, cls, role.id)
-    await interaction.response.send_message(f"Mapped **{cls}** → {role.mention}.", ephemeral=True)
+    await interaction.response.send_message(f"Mapped **{cls}** \u2192 {role.mention}.", ephemeral=True)
+
+    await set_auto_member_role_id(interaction.guild.id, role.id)
+    await interaction.response.send_message(f"Auto role set to {role.mention}.", ephemeral=True)
 
 @_ac_cfg.command(name="welcome-post", description="Post or refresh the Start Roster button message in the welcome channel")
 @_ac_cfg.checks.has_permissions(manage_guild=True)
