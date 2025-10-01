@@ -3970,10 +3970,38 @@ async def setup_class_role(interaction: discord.Interaction, class_name: str, ro
     await interaction.response.send_message(f"Mapped **{cls}** \u2192 {role.mention}.", ephemeral=True)
 
 
+
+@_ac_cfg.command(name="setup-class-role-id", description="Grant a class role using a numeric role ID")
+@_ac_cfg.checks.has_permissions(manage_roles=True)
+@_ac_cfg.describe(
+    class_name="One of Ranger, Rogue, Warrior, Mage, Druid",
+    role_id="Numeric role ID",
+    clear="Set true to remove the mapping"
+)
+async def setup_class_role_id(
+    interaction: discord.Interaction,
+    class_name: str,
+    role_id: int,
+    clear: Optional[bool] = False
+):
+    gid = interaction.guild.id if interaction.guild else None
+    if not gid:
+        return await interaction.response.send_message("Guild not found.", ephemeral=True)
+    cls = _norm_class(class_name)
+    if clear:
+        await set_class_role_id(gid, cls, None)
+        return await interaction.response.send_message(f"Cleared class role for **{cls}**.", ephemeral=True)
+    role = interaction.guild.get_role(int(role_id))
+    if not role:
+        return await interaction.response.send_message("Role ID not found in this server.", ephemeral=True)
+    await set_class_role_id(gid, cls, role.id)
+    await interaction.response.send_message(f"Mapped **{cls}** -> {role.mention}.", ephemeral=True)
+
+
 # Binder
 @bot.listen("on_ready")
 async def __bind_config_commands_and_sync():
-    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime, sync_now, setup_class_role]
+    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime, sync_now, setup_class_role, setup_class_role_id]
     for g in bot.guilds:
         for cmd in cmds:
             try:
