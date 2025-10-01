@@ -3877,6 +3877,8 @@ async def setup_roster(interaction: discord.Interaction, channel: discord.TextCh
 @_ac_cfg.command(name="setup-role", description="Set the role granted on roster submit")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
 async def setup_role(interaction: discord.Interaction, role: discord.Role):
+    await set_auto_member_role_id(interaction.guild.id, role.id)
+    await interaction.response.send_message(f"Auto role set to {role.mention}.", ephemeral=True)
 
 @_ac_cfg.command(name="welcome-post", description="Post or refresh the Start Roster button message in the welcome channel")
 @_ac_cfg.checks.has_permissions(manage_guild=True)
