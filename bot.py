@@ -3678,6 +3678,7 @@ class RosterConfirmView(discord.ui.View):
         except Exception as e:
             log.warning(f"[roster] upsert failed: {e}")
             return await interaction.response.send_message("Could not save your info.", ephemeral=True)
+        # Global auto-member role
         rid = await get_auto_member_role_id(gid)
         if rid:
             role = guild.get_role(rid)
@@ -3687,19 +3688,43 @@ class RosterConfirmView(discord.ui.View):
                 except Exception as e:
                     log.warning(f"[roster] role grant failed: {e}")
 
-        # Class-based role grant
+        # Class-based roles for main + alts
         try:
-            _, _, main_class, _, _, _ = self.payload
-            class_rid = await get_class_role_id(gid, main_class)
-            if class_rid:
-                crole = guild.get_role(class_rid)
-                if crole:
-                    try:
-                        await user.add_roles(crole, reason=f"Roster class {main_class}")
-                    except Exception as e:
-                        log.warning(f"[roster] class role grant failed: {e}")
+            # Payload: name, level, main_class, alts, tz_raw, tz_norm
+            _, _, main_class, alts, _, _ = self.payload
+            classes = set()
+            if main_class:
+                classes.add(str(main_class))
+            if alts:
+                try:
+                    for a in alts:
+                        c = a.get("class")
+                        if c:
+                            classes.add(str(c))
+                except Exception:
+                    pass
+
+            granted = 0
+            for c in classes:
+                try:
+                    class_rid = await get_class_role_id(gid, c)
+                except Exception as e:
+                    log.warning(f"[roster] class role lookup failed for {c}: {e}")
+                    class_rid = None
+                if not class_rid:
+                    continue
+                crole = guild.get_role(int(class_rid))
+                if not crole:
+                    continue
+                try:
+                    await user.add_roles(crole, reason=f"Roster class {c}")
+                    granted += 1
+                except Exception as e:
+                    log.warning(f"[roster] class role grant failed for {c}: {e}")
+            if granted == 0:
+                pass
         except Exception as e:
-            log.warning(f"[roster] class role lookup failed: {e}")
+            log.warning(f"[roster] class roles processing failed: {e}")
 
         roster_ch_id = await get_roster_channel_id(gid)
         if roster_ch_id:
