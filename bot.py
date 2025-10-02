@@ -3684,6 +3684,33 @@ class RosterConfirmView(discord.ui.View):
             if role:
                 try: await user.add_roles(role, reason="Roster intake complete")
                 except Exception as e: log.warning(f"[roster] role grant failed: {e}")
+        # Class roles for main + alt classes
+        try:
+            main_name, main_level, main_class, alts, tz_raw, tz_norm = self.payload
+            classes = set()
+            if main_class:
+                classes.add(_norm_class(main_class))
+            try:
+                for a in (alts or []):
+                    c = _norm_class(str(a.get('class') or a.get('Class') or a.get('cls') or ''))
+                    if c:
+                        classes.add(c)
+            except Exception:
+                pass
+            for c in list(classes):
+                crid = await get_class_role_id(gid, c)
+                if not crid:
+                    continue
+                r = guild.get_role(int(crid))
+                if not r:
+                    continue
+                try:
+                    await user.add_roles(r, reason=f"Roster class {c}")
+                except Exception as e:
+                    log.warning(f"[roster] class role grant failed for {c}: {e}")
+        except Exception as e:
+            log.warning(f"[roster] class role processing failed: {e}")
+
         roster_ch_id = await get_roster_channel_id(gid)
         if roster_ch_id:
             ch = guild.get_channel(roster_ch_id)
@@ -3748,7 +3775,7 @@ async def __cfg_helpers_migrate_on_ready():
         log.warning(f"[migrate] cfg helpers init failed: {e}")
 # ==================== END CONFIG HELPERS + SCHEMA ====================
 
-# ---- Class-role mapping helpers (additive, non-breaking) ----
+# ---- Class-role mapping helpers (additive) ----
 _CLASS_ROLE_COLUMNS = {
     "Ranger": "class_role_ranger_id",
     "Rogue": "class_role_rogue_id",
@@ -3758,16 +3785,21 @@ _CLASS_ROLE_COLUMNS = {
 }
 def _norm_class(name: str) -> str:
     t = (name or "").strip().lower()
-    mapping = {"ranger":"Ranger","rogue":"Rogue","warrior":"Warrior","mage":"Mage","druid":"Druid"}
-    return mapping.get(t, (name or "").strip().title())
+    return {"ranger":"Ranger","rogue":"Rogue","warrior":"Warrior","mage":"Mage","druid":"Druid"}.get(t, (name or "").strip().title())
+
 async def get_class_role_id(gid: int, class_name: str):
     key = _CLASS_ROLE_COLUMNS.get(_norm_class(class_name))
-    if not key: return None
-    try: return await _cfg_get_int(gid, key)
-    except Exception: return None
+    if not key:
+        return None
+    try:
+        return await _cfg_get_int(gid, key)  # uses existing helper
+    except Exception:
+        return None
+
 async def set_class_role_id(gid: int, class_name: str, rid: int | None):
     key = _CLASS_ROLE_COLUMNS.get(_norm_class(class_name))
-    if not key: return
+    if not key:
+        return
     if rid is None:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("INSERT INTO guild_config(guild_id) VALUES (?) ON CONFLICT(guild_id) DO NOTHING", (gid,))
@@ -3929,7 +3961,7 @@ async def __bind_config_commands_and_sync():
             log.warning(f"[sync] {g.id}: {e}")
 
 
-# ---- Class role setup commands (additive) ----
+# ---- Class role setup commands ----
 @_ac_cfg.command(name="setup-class-role", description="Map a roster class to a role")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
 @_ac_cfg.describe(class_name="Ranger | Rogue | Warrior | Mage | Druid", role="Role mention to grant")
@@ -5770,20 +5802,3 @@ except Exception:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-@bot.listen("on_ready")
-async def __bind_class_role_cmds():
-    try:
-        cmds = (setup_class_role, setup_class_role_id, clear_class_role, list_class_roles)
-    except NameError:
-        return
-    for g in bot.guilds:
-        for c in cmds:
-            try:
-                bot.tree.add_command(c, guild=g)
-            except Exception:
-                pass
-        try:
-            await bot.tree.sync(guild=g)
-        except Exception:
-            pass
