@@ -24,7 +24,7 @@ def _fix_name(s):
             if cand:
                 out = cand
         except Exception:
-            out = (out.replace("â€™","’").replace("â€œ","“").replace("â€\x9d","”").replace("â€“","–").replace("â€”","—"))
+            out = (out.replace("â€™","’").replace("â€œ","“").replace("â€\x9d","”").replace("-","–").replace("â€”","—"))
     try:
         if any(ord(ch) < 32 for ch in out):
             out = "".join(ch for ch in out if ord(ch) >= 32)
@@ -86,7 +86,7 @@ def sanitize_ui(text: str) -> str:
     try:
         if not isinstance(text, str):
             return text
-        suspicious = ("Ã", "Â", "ðŸ", "â€¢", "â€”", "â€“", "â€™", "â€œ", "â€", "ã€", "ï»¿")
+        suspicious = ("Ã", "Â", "ðŸ", "â€¢", "â€”", "-", "â€™", "â€œ", "â€", "ã€", "ï»¿")
         if any(tok in text for tok in suspicious):
             fixed = text.encode("latin-1", "ignore").decode("utf-8", "ignore")
             if fixed and (fixed.count(" ") == 0):  # avoid replacement-char mess
@@ -1199,7 +1199,7 @@ async def ensure_seed_for_guild(guild: discord.Guild):
                             )
                             alias_added += 1
                         except Exception:
-                            # unique constraint or similar â€“ safe to ignore
+                            # unique constraint or similar - safe to ignore
                             pass
                 else:
                     # Insert new with -Nada default next_spawn_ts
@@ -2475,7 +2475,7 @@ async def blacklist_show(ctx):
 @commands.has_permissions(manage_guild=True)
 async def setprefix_cmd(ctx, new_prefix: str):
     if not new_prefix or len(new_prefix) > 5:
-        return await ctx.send("Pick a prefix 1â€“5 characters.")
+        return await ctx.send("Pick a prefix 1-5 characters.")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO guild_config (guild_id,prefix) VALUES (?,?) "
@@ -3621,7 +3621,7 @@ class AltClassSelect(discord.ui.Select):
 # Optional alt modal (name + level only; class comes from dropdown)
 class AltModal(discord.ui.Modal, title="Add Alt (optional)"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
-    alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
+    alt_level = discord.ui.TextInput(label="Alt level 1-250", required=False, max_length=3, placeholder="e.g., 120")
 
     def __init__(self, parent_view: "RosterConfirmView"):
         super().__init__(timeout=300)
@@ -3684,6 +3684,39 @@ class RosterConfirmView(discord.ui.View):
             if role:
                 try: await user.add_roles(role, reason="Roster intake complete")
                 except Exception as e: log.warning(f"[roster] role grant failed: {e}")
+        # Class roles for main + alt classes
+        try:
+            member = user if isinstance(user, discord.Member) else (guild.get_member(interaction.user.id) or await guild.fetch_member(interaction.user.id))
+            try:
+                main_name, main_level, main_class, alts, tz_raw, tz_norm = self.payload
+            except Exception:
+                main_class, alts = None, None
+            classes = set()
+            if main_class:
+                c = _norm_class(main_class)
+                if c:
+                    classes.add(c)
+            it = alts if isinstance(alts, list) else ([alts] if isinstance(alts, dict) else [])
+            for a in it:
+                if isinstance(a, dict):
+                    c = _norm_class(a.get('class') or a.get('Class') or a.get('cls') or a.get('value') or a.get('label') or a.get('name'))
+                else:
+                    c = _norm_class(a)
+                if c:
+                    classes.add(c)
+            for c in list(classes):
+                crid = await get_class_role_id(gid, c)
+                if not crid:
+                    continue
+                r = guild.get_role(int(crid))
+                if not r:
+                    continue
+                try:
+                    await member.add_roles(r, reason=f"Roster class {c}")
+                except Exception as e:
+                    log.warning(f"[roster] class role grant failed for {c}: {e}")
+        except Exception as e:
+            log.warning(f"[roster] class role processing failed: {e}")
         roster_ch_id = await get_roster_channel_id(gid)
         if roster_ch_id:
             ch = guild.get_channel(roster_ch_id)
@@ -3748,7 +3781,7 @@ async def __cfg_helpers_migrate_on_ready():
         log.warning(f"[migrate] cfg helpers init failed: {e}")
 # ==================== END CONFIG HELPERS + SCHEMA ====================
 
-# ---- Class-role normalization helpers (robust) ----
+# ---- Class-role helpers (additive) ----
 _CLASS_ROLE_COLUMNS = {
     "Ranger": "class_role_ranger_id",
     "Rogue": "class_role_rogue_id",
@@ -3788,36 +3821,6 @@ async def set_class_role_id(gid: int, class_name: str, rid: int | None):
             await db.commit()
     else:
         await _cfg_set_int(gid, key, int(rid))
-
-def _iter_alt_classes(alts):
-    if alts is None:
-        return
-    try:
-        if isinstance(alts, str):
-            c = _norm_class(alts)
-            if c: 
-                yield c
-            return
-        if isinstance(alts, list):
-            for a in alts:
-                if isinstance(a, str):
-                    c = _norm_class(a)
-                    if c: 
-                        yield c
-                elif isinstance(a, dict):
-                    for k in ("class","Class","cls","value","label","name"):
-                        if k in a:
-                            c = _norm_class(a.get(k))
-                            if c:
-                                yield c
-        elif isinstance(alts, dict):
-            for k in ("class","Class","cls","value","label","name"):
-                if k in alts:
-                    c = _norm_class(alts.get(k))
-                    if c:
-                        yield c
-    except Exception:
-        return
 
 
 
@@ -3975,15 +3978,15 @@ async def __bind_config_commands_and_sync():
 # ---- Class role setup commands ----
 @_ac_cfg.command(name="setup-class-role", description="Map a roster class to a role")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
-@_ac_cfg.describe(class_name="Ranger | Rogue | Warrior | Mage | Druid", role="Role mention")
+@_ac_cfg.describe(class_name="Ranger | Rogue | Warrior | Mage | Druid", role="Role mention to grant")
 async def setup_class_role(interaction: discord.Interaction, class_name: str, role: discord.Role):
     gid = interaction.guild.id if interaction.guild else None
     if not gid:
         return await interaction.response.send_message("Guild not found.", ephemeral=True)
     await set_class_role_id(gid, class_name, role.id)
-    await interaction.response.send_message(f"Mapped { _norm_class(class_name) } -> {role.mention}.", ephemeral=True)
+    await interaction.response.send_message(f"Mapped {_norm_class(class_name)} -> {role.mention}.", ephemeral=True)
 
-@_ac_cfg.command(name="setup-class-role-id", description="Map a roster class to a role by ID")
+@_ac_cfg.command(name="setup-class-role-id", description="Map a roster class to a role by numeric ID")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
 @_ac_cfg.describe(class_name="Ranger | Rogue | Warrior | Mage | Druid", role_id="Numeric role ID")
 async def setup_class_role_id(interaction: discord.Interaction, class_name: str, role_id: int):
@@ -3994,9 +3997,9 @@ async def setup_class_role_id(interaction: discord.Interaction, class_name: str,
     if not role:
         return await interaction.response.send_message("Role ID not found in this server.", ephemeral=True)
     await set_class_role_id(gid, class_name, role.id)
-    await interaction.response.send_message(f"Mapped { _norm_class(class_name) } -> {role.mention}.", ephemeral=True)
+    await interaction.response.send_message(f"Mapped {_norm_class(class_name)} -> {role.mention}.", ephemeral=True)
 
-@_ac_cfg.command(name="clear-class-role", description="Clear class mapping")
+@_ac_cfg.command(name="clear-class-role", description="Clear a class->role mapping")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
 @_ac_cfg.describe(class_name="Ranger | Rogue | Warrior | Mage | Druid")
 async def clear_class_role(interaction: discord.Interaction, class_name: str):
@@ -4004,9 +4007,9 @@ async def clear_class_role(interaction: discord.Interaction, class_name: str):
     if not gid:
         return await interaction.response.send_message("Guild not found.", ephemeral=True)
     await set_class_role_id(gid, class_name, None)
-    await interaction.response.send_message(f"Cleared mapping for { _norm_class(class_name) }.", ephemeral=True)
+    await interaction.response.send_message(f"Cleared mapping for {_norm_class(class_name)}.", ephemeral=True)
 
-@_ac_cfg.command(name="list-class-roles", description="List current class mappings")
+@_ac_cfg.command(name="list-class-roles", description="List current class->role mappings")
 @_ac_cfg.checks.has_permissions(manage_guild=True)
 async def list_class_roles(interaction: discord.Interaction):
     gid = interaction.guild.id if interaction.guild else None
@@ -4120,7 +4123,7 @@ class RosterStartView(discord.ui.View):
 
 class RosterModal(discord.ui.Modal, title="Start Roster"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
-    main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
+    main_level = discord.ui.TextInput(label="Main level (1-250)", placeholder="215", required=True, max_length=3)
     alts = discord.ui.TextInput(label="Alts (name / level / class; or N/A)", style=discord.TextStyle.paragraph, required=False, placeholder="N/A", max_length=400)
     timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
 
@@ -4204,7 +4207,7 @@ class AltClassSelect(discord.ui.Select):
 
 class AltModal(discord.ui.Modal, title="Add Alt"):
     alt_name = discord.ui.TextInput(label="Alt name", required=False, max_length=32, placeholder="e.g., PocketHeals")
-    alt_level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3, placeholder="e.g., 120")
+    alt_level = discord.ui.TextInput(label="Alt level 1-250", required=False, max_length=3, placeholder="e.g., 120")
 
     def __init__(self, parent_view: "RosterConfirmView"):
         super().__init__(timeout=300)
@@ -4539,7 +4542,7 @@ class RosterConfirmView(discord.ui.View):
             # Lightweight inline modal substitute
             modal = discord.ui.Modal(title="Add Alt")
             name = discord.ui.TextInput(label="Alt name", required=False, max_length=32)
-            level = discord.ui.TextInput(label="Alt level 1â€“250", required=False, max_length=3)
+            level = discord.ui.TextInput(label="Alt level 1-250", required=False, max_length=3)
             modal.add_item(name); modal.add_item(level)
             async def on_submit(modal_inter: discord.Interaction):
                 nm = str(name).strip()
@@ -4620,7 +4623,7 @@ class RosterStartView(discord.ui.View):
 # Force our RosterModal without any alts textbox
 class RosterModal(discord.ui.Modal, title="Start Roster — Step 1/2"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
-    main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
+    main_level = discord.ui.TextInput(label="Main level (1-250)", placeholder="215", required=True, max_length=3)
     timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
 
     def __init__(self, selected_class: str):
@@ -4776,12 +4779,12 @@ async def _roster_edit_or_post(guild: discord.Guild, member: discord.Member, row
 # ===== Player self-service level updates =====
 from discord import app_commands as _ac_levels
 
-@_ac_levels.command(name="my-level-main", description="Update your main level (1â€“250) without reposting")
+@_ac_levels.command(name="my-level-main", description="Update your main level (1-250) without reposting")
 async def my_level_main(interaction: discord.Interaction, level: int):
     if not interaction.guild:
         return await interaction.response.send_message("Guild only.", ephemeral=True)
     if not (1 <= level <= 250):
-        return await interaction.response.send_message("Level must be 1â€“250.", ephemeral=True)
+        return await interaction.response.send_message("Level must be 1-250.", ephemeral=True)
     gid = interaction.guild.id; uid = interaction.user.id
     row = await _roster_load(gid, uid)
     if not row:
@@ -4802,7 +4805,7 @@ async def my_level_alt(interaction: discord.Interaction, slot: int, level: int):
     if not interaction.guild:
         return await interaction.response.send_message("Guild only.", ephemeral=True)
     if not (1 <= level <= 250):
-        return await interaction.response.send_message("Level must be 1â€“250.", ephemeral=True)
+        return await interaction.response.send_message("Level must be 1-250.", ephemeral=True)
     if slot < 1:
         return await interaction.response.send_message("Slot must be 1 or greater.", ephemeral=True)
     gid = interaction.guild.id; uid = interaction.user.id
@@ -5023,7 +5026,7 @@ async def __altv_notify_missing(gid: int, uid: int, bad_rows):
         if not user: return
         details = "\n".join(f"- #{i+1}: name='{r.get('name','?')}', level='{r.get('level')}', class='{r.get('class','?')}'" for i,r in enumerate(bad_rows))
         txt = ("Your alt submission had missing fields. "
-               "Each alt must include **Name**, **Level 1â€“250**, and **Class**.\n"
+               "Each alt must include **Name**, **Level 1-250**, and **Class**.\n"
                f"The following were skipped:\n{details}\n"
                "Use the intake again and fill all fields.")
         try: await user.send(txt)
@@ -5166,7 +5169,7 @@ async def __altv2_notify_missing(gid: int, uid: int, bad_rows):
         user = (bot.get_user(uid) or await bot.fetch_user(uid))
         if not user: return
         details = "\n".join(f"- #{i+1}: name='{r.get('name','?')}', level='{r.get('level')}', class='{r.get('class','?')}'" for i,r in enumerate(bad_rows))
-        msg = ("Your alt submission had missing fields. Each alt must include **Name**, **Level 1â€“250**, and **Class**.\n"
+        msg = ("Your alt submission had missing fields. Each alt must include **Name**, **Level 1-250**, and **Class**.\n"
                f"Skipped:\n{details}")
         try: await user.send(msg)
         except __d_altv2.Forbidden: pass
@@ -5301,7 +5304,7 @@ try:
         lvl_txt  = (getattr(self.alt_level, "value", "") or "").strip()
         lvl = __alts_coerce_level(lvl_txt)
         if not name_txt or lvl is None:
-            return await interaction.response.send_message("Alt name and a numeric level 1â€“250 are required.", ephemeral=True)
+            return await interaction.response.send_message("Alt name and a numeric level 1-250 are required.", ephemeral=True)
         cls = getattr(self.parent_view, "selected_alt_class", None) or "Ranger"
         mname, mlvl, mcls, alts, tz_raw, tz_norm = self.parent_view.payload
         alt = {"name": name_txt[:32], "level": int(lvl), "class": cls}
