@@ -3682,27 +3682,24 @@ class RosterConfirmView(discord.ui.View):
         if rid:
             role = guild.get_role(rid)
             if role:
-                me = guild.me
                 try:
-                    if me and me.guild_permissions.manage_roles and role < me.top_role and role != guild.default_role and role not in user.roles:
-                        await user.add_roles(role, reason="Roster intake complete")
+                    await user.add_roles(role, reason="Roster intake complete")
                 except Exception as e:
                     log.warning(f"[roster] role grant failed: {e}")
+
         # Class-based role grant
         try:
-            mcls = self.payload[2]
-            class_rid = await get_class_role_id(gid, mcls)
+            _, _, main_class, _, _, _ = self.payload
+            class_rid = await get_class_role_id(gid, main_class)
+            if class_rid:
+                crole = guild.get_role(class_rid)
+                if crole:
+                    try:
+                        await user.add_roles(crole, reason=f"Roster class {main_class}")
+                    except Exception as e:
+                        log.warning(f"[roster] class role grant failed: {e}")
         except Exception as e:
-            class_rid = None
             log.warning(f"[roster] class role lookup failed: {e}")
-        if class_rid:
-            crole = guild.get_role(class_rid)
-            me = guild.me
-            if crole and me and me.guild_permissions.manage_roles and crole < me.top_role and crole != guild.default_role and crole not in user.roles:
-                try:
-                    await user.add_roles(crole, reason=f"Roster class {mcls}")
-                except Exception as e:
-                    log.warning(f"[roster] class role grant failed: {e}")
 
         roster_ch_id = await get_roster_channel_id(gid)
         if roster_ch_id:
@@ -3953,47 +3950,31 @@ async def sync_now(interaction: discord.Interaction):
 
 @_ac_cfg.command(name="setup-class-role", description="Grant a role based on roster class at join")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
-@_ac_cfg.describe(class_name="One of Ranger, Rogue, Warrior, Mage, Druid",
-                  role="Role to grant for that class (omit with clear=true to remove)",
-                  clear="Set true to remove the mapping")
+@_ac_cfg.describe(class_name="One of Ranger, Rogue, Warrior, Mage, Druid", role="Select a role", clear="Remove mapping")
 async def setup_class_role(interaction: discord.Interaction, class_name: str, role: Optional[discord.Role] = None, clear: Optional[bool] = False):
     gid = interaction.guild.id if interaction.guild else None
-    if not gid:
-        return await interaction.response.send_message("Guild not found.", ephemeral=True)
+    if not gid: return await interaction.response.send_message("Guild not found.", ephemeral=True)
     cls = _norm_class(class_name)
-    if clear:
+    if clear: 
         await set_class_role_id(gid, cls, None)
         return await interaction.response.send_message(f"Cleared class role for **{cls}**.", ephemeral=True)
-    if role is None:
-        return await interaction.response.send_message("Provide a role or set clear=true.", ephemeral=True)
+    if role is None: 
+        return await interaction.response.send_message("Pick a role or use /setup-class-role-id.", ephemeral=True)
     await set_class_role_id(gid, cls, role.id)
-    await interaction.response.send_message(f"Mapped **{cls}** \u2192 {role.mention}.", ephemeral=True)
-
-
+    await interaction.response.send_message(f"Mapped **{cls}** -> {role.mention}.", ephemeral=True)
 
 @_ac_cfg.command(name="setup-class-role-id", description="Grant a class role using a numeric role ID")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
-@_ac_cfg.describe(
-    class_name="One of Ranger, Rogue, Warrior, Mage, Druid",
-    role_id="Numeric role ID",
-    clear="Set true to remove the mapping"
-)
-async def setup_class_role_id(
-    interaction: discord.Interaction,
-    class_name: str,
-    role_id: int,
-    clear: Optional[bool] = False
-):
+@_ac_cfg.describe(class_name="One of Ranger, Rogue, Warrior, Mage, Druid", role_id="Numeric role ID", clear="Remove mapping")
+async def setup_class_role_id(interaction: discord.Interaction, class_name: str, role_id: int, clear: Optional[bool] = False):
     gid = interaction.guild.id if interaction.guild else None
-    if not gid:
-        return await interaction.response.send_message("Guild not found.", ephemeral=True)
+    if not gid: return await interaction.response.send_message("Guild not found.", ephemeral=True)
     cls = _norm_class(class_name)
     if clear:
         await set_class_role_id(gid, cls, None)
         return await interaction.response.send_message(f"Cleared class role for **{cls}**.", ephemeral=True)
     role = interaction.guild.get_role(int(role_id))
-    if not role:
-        return await interaction.response.send_message("Role ID not found in this server.", ephemeral=True)
+    if not role: return await interaction.response.send_message("Role ID not found in this server.", ephemeral=True)
     await set_class_role_id(gid, cls, role.id)
     await interaction.response.send_message(f"Mapped **{cls}** -> {role.mention}.", ephemeral=True)
 
