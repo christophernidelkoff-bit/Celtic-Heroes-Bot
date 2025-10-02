@@ -5872,12 +5872,17 @@ if __name__ == "__main__":
 
 
 # ==================== CLASS ROLE GRANT HELPER ====================
+
+
+
+
+# ==================== CLASS ROLE GRANT HELPER ====================
 async def __grant_class_roles_after_roster(interaction, guild, user, payload, gid):
     try:
+        log.warning("[roster] helper entered")
         if not guild:
             log.warning("[roster] guild missing in grant helper")
             return
-        # Resolve Member
         try:
             member = user if isinstance(user, discord.Member) else (guild.get_member(interaction.user.id) or await guild.fetch_member(interaction.user.id))
         except Exception:
@@ -5885,16 +5890,12 @@ async def __grant_class_roles_after_roster(interaction, guild, user, payload, gi
         if not isinstance(member, discord.Member):
             log.warning("[roster] member resolution failed")
             return
-
-        # Unpack payload
         try:
             main_name, main_level, main_class, alts, tz_raw, tz_norm = payload
         except Exception:
             main_class, alts = None, None
-
-        # Normalize class string
-        def _norm_class_local(value) -> str:
-            s = str(value or "").lower()
+        def _norm_class_local(v) -> str:
+            s = str(v or "").lower()
             s = re.sub(r"[^a-z]", " ", s)
             s = re.sub(r"\s+", " ", s).strip()
             if "ranger" in s: return "Ranger"
@@ -5903,94 +5904,55 @@ async def __grant_class_roles_after_roster(interaction, guild, user, payload, gi
             if "mage" in s: return "Mage"
             if "druid" in s: return "Druid"
             return ""
-
         classes = set()
         if main_class:
-            c = _norm_class_local(main_class)
+            c = _norm_class_local(main_class); 
             if c: classes.add(c)
-
-        # Normalize alts
         try:
             alts_list = __alts_norm_list(alts)
         except Exception:
             if isinstance(alts, list): alts_list = alts
             elif isinstance(alts, dict): alts_list = [alts]
             else: alts_list = []
-
         for a in alts_list or []:
-            try:
-                if isinstance(a, dict):
-                    c = _norm_class_local(a.get("class") or a.get("Class") or a.get("cls") or a.get("value") or a.get("label") or a.get("name"))
-                else:
-                    c = _norm_class_local(a)
-                if c:
-                    classes.add(c)
-            except Exception as e:
-                log.warning(f"[roster] alt parse skipped: {e}")
-
+            c = _norm_class_local(a.get("class") if isinstance(a, dict) else a)
+            if c: classes.add(c)
+        log.warning(f"[roster] parsed classes: {sorted(list(classes))}")
         if not classes:
-            log.info("[roster] no classes parsed from submission; skipping class grants")
             return
-
-        # Resolve bot member and permissions
         me = getattr(guild, "me", None) or (await guild.fetch_member(bot.user.id) if bot and hasattr(bot, "user") and bot.user else None)
         perms = getattr(me, "guild_permissions", None) if me else None
         if perms and not perms.manage_roles:
             log.warning("[roster] bot lacks Manage Roles permission")
             return
-
-        # Map columns for safety
-        col_map = {
-            "Ranger": "class_role_ranger_id",
-            "Rogue": "class_role_rogue_id",
-            "Warrior": "class_role_warrior_id",
-            "Mage": "class_role_mage_id",
-            "Druid": "class_role_druid_id",
-        }
-
+        col_map = {"Ranger":"class_role_ranger_id","Rogue":"class_role_rogue_id","Warrior":"class_role_warrior_id","Mage":"class_role_mage_id","Druid":"class_role_druid_id"}
         for c in list(classes):
+            rid = None
             try:
-                # Prefer official getter if present
-                rid = None
-                try:
-                    rid = await get_class_role_id(gid, c)
-                except Exception:
-                    fld = col_map.get(c)
-                    if fld:
-                        rid = await _cfg_get_int(gid, fld)
-
-                if not rid:
-                    log.info(f"[roster] no mapping set for class {c}")
-                    continue
-
-                role_obj = guild.get_role(int(rid))
-                if not role_obj:
-                    log.warning(f"[roster] mapped role id {rid} for {c} not found in guild")
-                    continue
-
-                # Hierarchy check
-                if me and hasattr(me, "top_role") and role_obj.position >= me.top_role.position:
-                    log.warning(f"[roster] cannot grant {c}; role above or equal to bot's top role")
-                    continue
-
-                # Skip if already has
-                if role_obj in getattr(member, "roles", []):
-                    log.info(f"[roster] member already has role for {c}")
-                    continue
-
-                # Grant
-                try:
-                    await member.add_roles(role_obj, reason=f"Roster class {c}")
-                    log.info(f"[roster] granted class role {role_obj.id} for {c} to {member.id}")
-                except discord.Forbidden as e:
-                    log.warning(f"[roster] forbidden adding role for {c}: {e}")
-                except discord.HTTPException as e:
-                    log.warning(f"[roster] http error adding role for {c}: {e}")
-                except Exception as e:
-                    log.warning(f"[roster] class role grant failed for {c}: {e}")
+                rid = await get_class_role_id(gid, c)
+            except Exception:
+                fld = col_map.get(c)
+                if fld:
+                    rid = await _cfg_get_int(gid, fld)
+            log.warning(f"[roster] mapping {c} -> {rid}")
+            if not rid:
+                continue
+            role_obj = guild.get_role(int(rid))
+            log.warning(f"[roster] role_obj for {c}: {getattr(role_obj,'id',None)}")
+            if not role_obj:
+                continue
+            if me and hasattr(me, "top_role") and role_obj.position >= me.top_role.position:
+                log.warning(f"[roster] hierarchy block for {c}")
+                continue
+            if role_obj in getattr(member, "roles", []):
+                log.warning(f"[roster] already had role for {c}")
+                continue
+            try:
+                await member.add_roles(role_obj, reason=f"Roster class {c}")
+                log.warning(f"[roster] granted {c} -> {role_obj.id}")
             except Exception as e:
-                log.warning(f"[roster] class processing error for {c}: {e}")
+                log.warning(f"[roster] grant failed {c}: {e}")
     except Exception as e:
-        log.warning(f"[roster] class role helper crashed: {e}")
+        log.warning(f"[roster] helper crashed: {e}")
 # ================== END CLASS ROLE GRANT HELPER ==================
 
