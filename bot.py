@@ -3684,32 +3684,6 @@ class RosterConfirmView(discord.ui.View):
             if role:
                 try: await user.add_roles(role, reason="Roster intake complete")
                 except Exception as e: log.warning(f"[roster] role grant failed: {e}")
-        # Grant class roles for main and alts
-        try:
-            main_name, main_level, main_class, alts, tz_raw, tz_norm = self.payload
-            classes = set()
-            if main_class:
-                classes.add(_norm_class(main_class))
-            try:
-                for a in (alts or []):
-                    c = _norm_class(str(a.get('class') or ''))
-                    if c:
-                        classes.add(c)
-            except Exception:
-                pass
-            for c in list(classes):
-                crid = await get_class_role_id(gid, c)
-                if not crid:
-                    continue
-                r = guild.get_role(int(crid))
-                if not r:
-                    continue
-                try:
-                    await user.add_roles(r, reason=f"Roster class {c}")
-                except Exception as e:
-                    log.warning(f"[roster] class role grant failed for {c}: {e}")
-        except Exception as e:
-            log.warning(f"[roster] class role processing failed: {e}")
         roster_ch_id = await get_roster_channel_id(gid)
         if roster_ch_id:
             ch = guild.get_channel(roster_ch_id)
@@ -3774,8 +3748,7 @@ async def __cfg_helpers_migrate_on_ready():
         log.warning(f"[migrate] cfg helpers init failed: {e}")
 # ==================== END CONFIG HELPERS + SCHEMA ====================
 
-
-# ---- Class-role mapping helpers ----
+# ---- Class-role mapping helpers (additive, non-breaking) ----
 _CLASS_ROLE_COLUMNS = {
     "Ranger": "class_role_ranger_id",
     "Rogue": "class_role_rogue_id",
@@ -3783,31 +3756,25 @@ _CLASS_ROLE_COLUMNS = {
     "Mage": "class_role_mage_id",
     "Druid": "class_role_druid_id",
 }
-def _norm_class_key(name: str) -> str:
-    t = (name or "").strip().title()
-    return t if t in _CLASS_ROLE_COLUMNS else t
-
+def _norm_class(name: str) -> str:
+    t = (name or "").strip().lower()
+    mapping = {"ranger":"Ranger","rogue":"Rogue","warrior":"Warrior","mage":"Mage","druid":"Druid"}
+    return mapping.get(t, (name or "").strip().title())
 async def get_class_role_id(gid: int, class_name: str):
-    key = _CLASS_ROLE_COLUMNS.get(_norm_class_key(class_name))
-    if not key:
-        return None
-    try:
-        return await _cfg_get_int(gid, key)
-    except Exception:
-        return None
-
+    key = _CLASS_ROLE_COLUMNS.get(_norm_class(class_name))
+    if not key: return None
+    try: return await _cfg_get_int(gid, key)
+    except Exception: return None
 async def set_class_role_id(gid: int, class_name: str, rid: int | None):
-    key = _CLASS_ROLE_COLUMNS.get(_norm_class_key(class_name))
-    if not key:
-        return
+    key = _CLASS_ROLE_COLUMNS.get(_norm_class(class_name))
+    if not key: return
     if rid is None:
-        # store NULL by writing None via raw SQL
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("INSERT INTO guild_config(guild_id) VALUES (?) ON CONFLICT(guild_id) DO NOTHING",(gid,))
+            await db.execute("INSERT INTO guild_config(guild_id) VALUES (?) ON CONFLICT(guild_id) DO NOTHING", (gid,))
             await db.execute(f"UPDATE guild_config SET {key}=NULL WHERE guild_id=?", (gid,))
             await db.commit()
-        return
-    await _cfg_set_int(gid, key, int(rid))
+    else:
+        await _cfg_set_int(gid, key, int(rid))
 
 
 
@@ -3948,10 +3915,7 @@ async def sync_now(interaction: discord.Interaction):
 # Binder
 @bot.listen("on_ready")
 async def __bind_config_commands_and_sync():
-    cmds = [
-        setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd,
-        setup_uptime, sync_now, setup_class_role, setup_class_role_id, clear_class_role, list_class_roles
-    ]
+    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime, sync_now, setup_class_role, setup_class_role_id, clear_class_role, list_class_roles]
     for g in bot.guilds:
         for cmd in cmds:
             try:
@@ -3965,7 +3929,7 @@ async def __bind_config_commands_and_sync():
             log.warning(f"[sync] {g.id}: {e}")
 
 
-# ---- Config commands: class-role mapping ----
+# ---- Class role setup commands (additive) ----
 @_ac_cfg.command(name="setup-class-role", description="Map a roster class to a role")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
 @_ac_cfg.describe(class_name="Ranger | Rogue | Warrior | Mage | Druid", role="Role mention to grant")
@@ -3974,9 +3938,9 @@ async def setup_class_role(interaction: discord.Interaction, class_name: str, ro
     if not gid:
         return await interaction.response.send_message("Guild not found.", ephemeral=True)
     await set_class_role_id(gid, class_name, role.id)
-    await interaction.response.send_message(f"Mapped {_norm_class_key(class_name)} -> {role.mention}.", ephemeral=True)
+    await interaction.response.send_message(f"Mapped {_norm_class(class_name)} -> {role.mention}.", ephemeral=True)
 
-@_ac_cfg.command(name="setup-class-role-id", description="Map a roster class to a role by ID")
+@_ac_cfg.command(name="setup-class-role-id", description="Map a roster class to a role by numeric ID")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
 @_ac_cfg.describe(class_name="Ranger | Rogue | Warrior | Mage | Druid", role_id="Numeric role ID")
 async def setup_class_role_id(interaction: discord.Interaction, class_name: str, role_id: int):
@@ -3987,32 +3951,33 @@ async def setup_class_role_id(interaction: discord.Interaction, class_name: str,
     if not role:
         return await interaction.response.send_message("Role ID not found in this server.", ephemeral=True)
     await set_class_role_id(gid, class_name, role.id)
-    await interaction.response.send_message(f"Mapped {_norm_class_key(class_name)} -> {role.mention}.", ephemeral=True)
+    await interaction.response.send_message(f"Mapped {_norm_class(class_name)} -> {role.mention}.", ephemeral=True)
 
-@_ac_cfg.command(name="clear-class-role", description="Clear the mapping for a class")
+@_ac_cfg.command(name="clear-class-role", description="Clear a class->role mapping")
 @_ac_cfg.checks.has_permissions(manage_roles=True)
+@_ac_cfg.describe(class_name="Ranger | Rogue | Warrior | Mage | Druid")
 async def clear_class_role(interaction: discord.Interaction, class_name: str):
     gid = interaction.guild.id if interaction.guild else None
     if not gid:
         return await interaction.response.send_message("Guild not found.", ephemeral=True)
     await set_class_role_id(gid, class_name, None)
-    await interaction.response.send_message(f"Cleared mapping for {_norm_class_key(class_name)}.", ephemeral=True)
+    await interaction.response.send_message(f"Cleared mapping for {_norm_class(class_name)}.", ephemeral=True)
 
-@_ac_cfg.command(name="list-class-roles", description="Show current class->role mappings")
+@_ac_cfg.command(name="list-class-roles", description="List current class->role mappings")
 @_ac_cfg.checks.has_permissions(manage_guild=True)
 async def list_class_roles(interaction: discord.Interaction):
     gid = interaction.guild.id if interaction.guild else None
     if not gid:
         return await interaction.response.send_message("Guild not found.", ephemeral=True)
-    rows = []
+    lines = []
     for cname, field in _CLASS_ROLE_COLUMNS.items():
         rid = await _cfg_get_int(gid, field)
         if rid:
             role = interaction.guild.get_role(int(rid))
-            rows.append(f"{cname}: {role.mention if role else rid}")
+            lines.append(f"{cname}: {role.mention if role else rid}")
         else:
-            rows.append(f"{cname}: not set")
-    await interaction.response.send_message("\n".join(rows), ephemeral=True)
+            lines.append(f"{cname}: not set")
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 # ==================== END MINIMAL CONFIG COMMANDS ====================
 
@@ -5805,3 +5770,20 @@ except Exception:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+@bot.listen("on_ready")
+async def __bind_class_role_cmds():
+    try:
+        cmds = (setup_class_role, setup_class_role_id, clear_class_role, list_class_roles)
+    except NameError:
+        return
+    for g in bot.guilds:
+        for c in cmds:
+            try:
+                bot.tree.add_command(c, guild=g)
+            except Exception:
+                pass
+        try:
+            await bot.tree.sync(guild=g)
+        except Exception:
+            pass
