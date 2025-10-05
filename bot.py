@@ -346,9 +346,9 @@ def now_ts() -> int:
 
 def ts_to_utc(ts: int) -> str:
     try:
-        return ts(int(ts), 't')
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     except Exception:
-        return '—'
+        return "—"
 
 _nat_re = re.compile(r'(\d+|\D+)')
 def natural_key(s: str) -> List[Any]:
@@ -464,38 +464,6 @@ RESERVED_TRIGGERS = {
 def preflight_migrate_sync():
     """Error-check 3: hardened preflight with clear messaging on read-only failures."""
     import sqlite3
-# === Localized Timestamp helpers (ETA auto-localized per viewer) ===
-from datetime import datetime, timezone as _tz_m
-
-def _safe_epoch(dt_or_epoch):
-    # Error checks: None, wrong type, out-of-range epoch
-    if dt_or_epoch is None:
-        raise ValueError("timestamp is None")  # 1
-    if isinstance(dt_or_epoch, datetime):
-        dt = dt_or_epoch
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_tz_m.utc)  # assume if naive
-        else:
-            dt = dt.astimezone(_tz_m.utc)
-        e = int(dt.timestamp())
-    elif isinstance(dt_or_epoch, (int, float)):
-        e = int(dt_or_epoch)
-    else:
-        raise TypeError(f"expected datetime or epoch number, got {type(dt_or_epoch)!r}")  # 2
-    if e < 0 or e > 2_147_483_647:
-        raise ValueError(f"epoch out of Discord range: {e}")  # 3
-    return e
-
-def ts(dt_or_epoch, style: str = "t") -> str:
-    # styles: t,T,d,D,f,F,R
-    if style not in {"t","T","d","D","f","F","R"}:
-        style = "t"
-    return f"<t:{_safe_epoch(dt_or_epoch)}:{style}>"
-
-def eta(dt_or_epoch) -> str:
-    return ts(dt_or_epoch, "R")
-# === End helpers ===
-
     db_dir = os.path.dirname(DB_PATH) or "."
     try:
         pathlib.Path(db_dir).mkdir(parents=True, exist_ok=True)
@@ -1769,7 +1737,7 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
                 _ws = ""
             _win_seg = (f" • Window: `{_ws}`" if _ws and "pending" not in _ws.lower() else "")
             line1 = f"ã€” **{nm}** • Spawn: `{t}`{_win_seg} ã€•"
-            eta_line = f"\n> *ETA {datets(ts, 't')}*" if show_eta and (ts - now) > 0 else ""
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
             blocks.append("*Lost (-Nada):*")
@@ -1942,7 +1910,7 @@ async def timers_cmd(ctx):
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
             line1 = f"ã€” **{nm}** • Spawn: `{t}` • Window: `{win_status}` ã€•"
-            eta_line = f"\n> *ETA {datets(ts, 't')}*" if show_eta and (ts - now) > 0 else ""
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
             blocks.append("*Lost (-Nada):*")
@@ -2150,7 +2118,7 @@ async def boss_info(ctx, *, name: str):
         return await ctx.send("Boss not found.")
     name, spawn_m, window_m, ts, ch_id, pre, role_id, cat, sort_key = r
     left = int(ts) - now_ts()
-    when_small = ts(int(ts), 't')
+    when_small = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime('%H:%M UTC')
     line1 = f"**{name}**\nCategory: {cat} | Sort: {sort_key or '(none)'}\n"
     line2 = f"Respawn: {spawn_m}m | Window: {window_m}m\n"
     line3 = f"Spawn Time: `{fmt_delta_for_list(left)}`"
@@ -2596,7 +2564,7 @@ async def seteta_cmd(ctx, state: str):
             (ctx.guild.id, 1 if on else 0)
         )
         await db.commit()
-    await ctx.send(f":white_check_mark: ETA display {'enabled' if on else 'disabled'}.")
+    await ctx.send(f":white_check_mark: UTC ETA display {'enabled' if on else 'disabled'}.")
 
 @bot.command(name="setuptime")
 @commands.has_permissions(manage_guild=True)
@@ -3536,7 +3504,7 @@ async def lm_cleanup_loop():
 
 @tasks.loop(minutes=60.0)
 async def lm_digest_loop():
-    # Runs hourly; posts digest at 00/06/12/18 once per hour per guild/section if active listings exist.
+    # Runs hourly; posts digest at 00/06/12/18 UTC once per hour per guild/section if active listings exist.
     now = datetime.now(tz=timezone.utc)
     if (now.hour % LM_DIGEST_CADENCE_HOURS) != 0:
         return
@@ -4024,7 +3992,7 @@ class RosterModal(discord.ui.Modal, title="Start Roster"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
     main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
     alts = discord.ui.TextInput(label="Alts (name / level / class; or N/A)", style=discord.TextStyle.paragraph, required=False, placeholder="N/A", max_length=400)
-    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or-05:00", required=False, max_length=64)
+    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
 
     def __init__(self, selected_class: str):
         super().__init__(timeout=600)
@@ -4523,7 +4491,7 @@ class RosterStartView(discord.ui.View):
 class RosterModal(discord.ui.Modal, title="Start Roster — Step 1/2"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
     main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
-    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or-05:00", required=False, max_length=64)
+    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
 
     def __init__(self, selected_class: str):
         super().__init__(timeout=600)
@@ -5426,7 +5394,7 @@ async def _build_timer_embeds_compact(guild: dm.Guild, categories: _List[str]):
             if show_eta and (ts - now) > 0:
                 try:
                     from datetime import datetime, timezone
-                    seg += f" · {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('ETA %H:%M')}"
+                    seg += f" · {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
                 except Exception:
                     pass
             lines.append(seg)
@@ -5562,7 +5530,7 @@ async def _build_timer_embeds_compact(guild, categories):
                 seg = f"• **{nm}** — `{t}` · {stat}"
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
-                    seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M')}"
+                    seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
                 lines.append(seg)
             if nada:
                 lines.append("*Lost (-Nada)*")
@@ -5663,7 +5631,7 @@ async def _build_timer_embeds_count_missing_only(guild: dm.Guild, categories: Li
                 seg = (f"• **{nm}** `{t}`" + (f" · {_ws}" if _inc else ""))
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
-                    seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M')}"
+                    seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
                 lines.append(seg)
 
             if missing_count:
