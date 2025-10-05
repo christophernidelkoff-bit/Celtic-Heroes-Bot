@@ -346,9 +346,9 @@ def now_ts() -> int:
 
 def ts_to_utc(ts: int) -> str:
     try:
-        return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        return ts(int(ts), 't')
     except Exception:
-        return "—"
+        return '—'
 
 _nat_re = re.compile(r'(\d+|\D+)')
 def natural_key(s: str) -> List[Any]:
@@ -464,14 +464,12 @@ RESERVED_TRIGGERS = {
 def preflight_migrate_sync():
     """Error-check 3: hardened preflight with clear messaging on read-only failures."""
     import sqlite3
-# === Localized Timestamp helpers (one-change patch: ETA in viewer timezone) ===
+# === Localized Timestamp helpers (ETA auto-localized per viewer) ===
 from datetime import datetime, timezone as _tz_m
 
 def _safe_epoch(dt_or_epoch):
-    # Accept datetime, int, or float. Provide three extra error checks.
     if dt_or_epoch is None:
         raise ValueError("timestamp is None")  # 1
-    # datetime case
     if isinstance(dt_or_epoch, datetime):
         dt = dt_or_epoch
         if dt.tzinfo is None:
@@ -479,27 +477,22 @@ def _safe_epoch(dt_or_epoch):
         else:
             dt = dt.astimezone(_tz_m.utc)
         e = int(dt.timestamp())
-    # numeric cases
     elif isinstance(dt_or_epoch, (int, float)):
-        try:
-            e = int(dt_or_epoch)
-        except Exception as ex:
-            raise TypeError(f"cannot convert to epoch: {dt_or_epoch!r}") from ex  # 2
+        e = int(dt_or_epoch)
     else:
-        raise TypeError(f"expected datetime or epoch number, got {type(dt_or_epoch)!r}")  # 3
-
-    if e < 0 or e > 2_147_483_647:  # Discord supports 32-bit signed epoch
-        raise ValueError(f"epoch out of Discord range: {e}")
+        raise TypeError(f"expected datetime or epoch number, got {type(dt_or_epoch)!r}")  # 2
+    if e < 0 or e > 2_147_483_647:
+        raise ValueError(f"epoch out of Discord range: {e}")  # 3
     return e
 
 def ts(dt_or_epoch, style: str = "t") -> str:
-    # styles: t,T,d,D,f,F,R  -> https://discord.com/developers/docs/reference#message-formatting-timestamp-styles
+    # styles: t,T,d,D,f,F,R
     if style not in {"t","T","d","D","f","F","R"}:
         style = "t"
     return f"<t:{_safe_epoch(dt_or_epoch)}:{style}>"
 
 def eta(dt_or_epoch) -> str:
-    return ts(dt_or_epoch, "R")  # “in 12m”, “in 2h”, etc., auto-localized
+    return ts(dt_or_epoch, "R")
 # === End helpers ===
 
     db_dir = os.path.dirname(DB_PATH) or "."
@@ -1456,7 +1449,7 @@ async def timers_tick():
             continue
         pre_ts = int(next_ts) - int(pre) * 60
         if prev < pre_ts <= now:
-            key = f"{gid}:{bid}:PRE:{next_ts} ({eta(next_ts)})"
+            key = f"{gid}:{bid}:PRE:{next_ts}"
             if key in bot._seen_keys:
                 continue
             bot._seen_keys.add(key)
@@ -1484,7 +1477,7 @@ async def timers_tick():
         # mute noisy spam that was already due before boot to avoid duplicate messages
         if not (prev < int(next_ts) <= now):
             continue
-        key = f"{gid}:{bid}:WINDOW:{next_ts} ({eta(next_ts)})"
+        key = f"{gid}:{bid}:WINDOW:{next_ts}"
         if key in bot._seen_keys:
             continue
         bot._seen_keys.add(key)
@@ -1775,7 +1768,7 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
                 _ws = ""
             _win_seg = (f" • Window: `{_ws}`" if _ws and "pending" not in _ws.lower() else "")
             line1 = f"ã€” **{nm}** • Spawn: `{t}`{_win_seg} ã€•"
-            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M')}*" if show_eta and (ts - now) > 0 else ""
+            eta_line = f"\n> *ETA {datets(ts, 't')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
             blocks.append("*Lost (-Nada):*")
@@ -1948,7 +1941,7 @@ async def timers_cmd(ctx):
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
             line1 = f"ã€” **{nm}** • Spawn: `{t}` • Window: `{win_status}` ã€•"
-            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M')}*" if show_eta and (ts - now) > 0 else ""
+            eta_line = f"\n> *ETA {datets(ts, 't')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
             blocks.append("*Lost (-Nada):*")
@@ -2156,7 +2149,7 @@ async def boss_info(ctx, *, name: str):
         return await ctx.send("Boss not found.")
     name, spawn_m, window_m, ts, ch_id, pre, role_id, cat, sort_key = r
     left = int(ts) - now_ts()
-    when_small = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime('%H:%M')
+    when_small = ts(int(ts), 't')
     line1 = f"**{name}**\nCategory: {cat} | Sort: {sort_key or '(none)'}\n"
     line2 = f"Respawn: {spawn_m}m | Window: {window_m}m\n"
     line3 = f"Spawn Time: `{fmt_delta_for_list(left)}`"
