@@ -346,7 +346,7 @@ def now_ts() -> int:
 
 def ts_to_utc(ts: int) -> str:
     try:
-        return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return "—"
 
@@ -464,6 +464,44 @@ RESERVED_TRIGGERS = {
 def preflight_migrate_sync():
     """Error-check 3: hardened preflight with clear messaging on read-only failures."""
     import sqlite3
+# === Localized Timestamp helpers (one-change patch: ETA in viewer timezone) ===
+from datetime import datetime, timezone as _tz_m
+
+def _safe_epoch(dt_or_epoch):
+    # Accept datetime, int, or float. Provide three extra error checks.
+    if dt_or_epoch is None:
+        raise ValueError("timestamp is None")  # 1
+    # datetime case
+    if isinstance(dt_or_epoch, datetime):
+        dt = dt_or_epoch
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tz_m.utc)  # assume if naive
+        else:
+            dt = dt.astimezone(_tz_m.utc)
+        e = int(dt.timestamp())
+    # numeric cases
+    elif isinstance(dt_or_epoch, (int, float)):
+        try:
+            e = int(dt_or_epoch)
+        except Exception as ex:
+            raise TypeError(f"cannot convert to epoch: {dt_or_epoch!r}") from ex  # 2
+    else:
+        raise TypeError(f"expected datetime or epoch number, got {type(dt_or_epoch)!r}")  # 3
+
+    if e < 0 or e > 2_147_483_647:  # Discord supports 32-bit signed epoch
+        raise ValueError(f"epoch out of Discord range: {e}")
+    return e
+
+def ts(dt_or_epoch, style: str = "t") -> str:
+    # styles: t,T,d,D,f,F,R  -> https://discord.com/developers/docs/reference#message-formatting-timestamp-styles
+    if style not in {"t","T","d","D","f","F","R"}:
+        style = "t"
+    return f"<t:{_safe_epoch(dt_or_epoch)}:{style}>"
+
+def eta(dt_or_epoch) -> str:
+    return ts(dt_or_epoch, "R")  # “in 12m”, “in 2h”, etc., auto-localized
+# === End helpers ===
+
     db_dir = os.path.dirname(DB_PATH) or "."
     try:
         pathlib.Path(db_dir).mkdir(parents=True, exist_ok=True)
@@ -1418,7 +1456,7 @@ async def timers_tick():
             continue
         pre_ts = int(next_ts) - int(pre) * 60
         if prev < pre_ts <= now:
-            key = f"{gid}:{bid}:PRE:{next_ts}"
+            key = f"{gid}:{bid}:PRE:{next_ts} ({eta(next_ts)})"
             if key in bot._seen_keys:
                 continue
             bot._seen_keys.add(key)
@@ -1446,7 +1484,7 @@ async def timers_tick():
         # mute noisy spam that was already due before boot to avoid duplicate messages
         if not (prev < int(next_ts) <= now):
             continue
-        key = f"{gid}:{bid}:WINDOW:{next_ts}"
+        key = f"{gid}:{bid}:WINDOW:{next_ts} ({eta(next_ts)})"
         if key in bot._seen_keys:
             continue
         bot._seen_keys.add(key)
@@ -1737,7 +1775,7 @@ async def build_timer_embeds_for_categories(guild: discord.Guild, categories: Li
                 _ws = ""
             _win_seg = (f" • Window: `{_ws}`" if _ws and "pending" not in _ws.lower() else "")
             line1 = f"ã€” **{nm}** • Spawn: `{t}`{_win_seg} ã€•"
-            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
             blocks.append("*Lost (-Nada):*")
@@ -1910,7 +1948,7 @@ async def timers_cmd(ctx):
         for sk, nm, t, ts, win_m in normal:
             win_status = window_label(now, ts, win_m)
             line1 = f"ã€” **{nm}** • Spawn: `{t}` • Window: `{win_status}` ã€•"
-            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M UTC')}*" if show_eta and (ts - now) > 0 else ""
+            eta_line = f"\n> *ETA {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M')}*" if show_eta and (ts - now) > 0 else ""
             blocks.append(line1 + (eta_line if eta_line else ""))
         if nada_list:
             blocks.append("*Lost (-Nada):*")
@@ -2118,7 +2156,7 @@ async def boss_info(ctx, *, name: str):
         return await ctx.send("Boss not found.")
     name, spawn_m, window_m, ts, ch_id, pre, role_id, cat, sort_key = r
     left = int(ts) - now_ts()
-    when_small = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime('%H:%M UTC')
+    when_small = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime('%H:%M')
     line1 = f"**{name}**\nCategory: {cat} | Sort: {sort_key or '(none)'}\n"
     line2 = f"Respawn: {spawn_m}m | Window: {window_m}m\n"
     line3 = f"Spawn Time: `{fmt_delta_for_list(left)}`"
@@ -2564,7 +2602,7 @@ async def seteta_cmd(ctx, state: str):
             (ctx.guild.id, 1 if on else 0)
         )
         await db.commit()
-    await ctx.send(f":white_check_mark: UTC ETA display {'enabled' if on else 'disabled'}.")
+    await ctx.send(f":white_check_mark: ETA display {'enabled' if on else 'disabled'}.")
 
 @bot.command(name="setuptime")
 @commands.has_permissions(manage_guild=True)
@@ -3504,7 +3542,7 @@ async def lm_cleanup_loop():
 
 @tasks.loop(minutes=60.0)
 async def lm_digest_loop():
-    # Runs hourly; posts digest at 00/06/12/18 UTC once per hour per guild/section if active listings exist.
+    # Runs hourly; posts digest at 00/06/12/18 once per hour per guild/section if active listings exist.
     now = datetime.now(tz=timezone.utc)
     if (now.hour % LM_DIGEST_CADENCE_HOURS) != 0:
         return
@@ -3693,39 +3731,6 @@ class RosterConfirmView(discord.ui.View):
                     await ch.send(embed=e)
                 except Exception as e:
                     log.warning(f"[roster] post failed: {e}")
-        # ---- Class role grants from roster submission ----
-        try:
-            mname, mlvl, mcls, alts, tz_raw, tz_norm = self.payload
-        except Exception:
-            mcls, alts = None, []
-        classes = set()
-        if mcls:
-            classes.add(_norm_class(mcls))
-        if isinstance(alts, list):
-            for a in alts:
-                try:
-                    c = _norm_class(a.get("class") if isinstance(a, dict) else a)
-                    if c: classes.add(c)
-                except Exception:
-                    pass
-        member_ok = hasattr(user, "roles")
-        bot_can = guild.me.guild_permissions.manage_roles if hasattr(guild, "me") else False
-        if member_ok and bot_can and classes:
-            for c in list(classes):
-                try:
-                    rid = await get_class_role_id(gid, c)
-                    if not rid:
-                        continue
-                    r = guild.get_role(int(rid))
-                    if not r:
-                        continue
-                    if r in user.roles:
-                        continue
-                    if hasattr(guild, "me") and hasattr(guild.me, "top_role") and r.position >= guild.me.top_role.position:
-                        continue
-                    await user.add_roles(r, reason=f"Roster class {c}")
-                except Exception as e:
-                    log.warning(f"[class-grant] failed for {c}: {e}")
         await interaction.response.edit_message(content="You're set. Welcome.", view=None)
 # ==================== END ROSTER SAVE FIX + OPTIONAL ALT INTAKE ====================
 
@@ -3774,45 +3779,6 @@ async def __cfg_helpers_migrate_on_ready():
             await db.commit()
     except Exception as e:
         log.warning(f"[migrate] cfg helpers init failed: {e}")
-
-# ---- Class role mapping helpers ----
-_CLASS_ROLE_COLUMNS = {
-    "Ranger":  "class_role_ranger_id",
-    "Rogue":   "class_role_rogue_id",
-    "Warrior": "class_role_warrior_id",
-    "Mage":    "class_role_mage_id",
-    "Druid":   "class_role_druid_id",
-}
-
-async def get_class_role_id(gid: int, class_name: str):
-    try:
-        cname = _norm_class(class_name)
-    except Exception:
-        cname = str(class_name or "")
-    field = _CLASS_ROLE_COLUMNS.get(cname)
-    if not field:
-        return None
-    try:
-        return await _cfg_get_int(gid, field)
-    except Exception:
-        return None
-
-async def set_class_role_id(gid: int, class_name: str, rid: int | None):
-    try:
-        cname = _norm_class(class_name)
-    except Exception:
-        cname = str(class_name or "")
-    field = _CLASS_ROLE_COLUMNS.get(cname)
-    if not field:
-        return
-    if rid is None:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("CREATE TABLE IF NOT EXISTS guild_config (guild_id INTEGER PRIMARY KEY)")
-            await db.execute(f"UPDATE guild_config SET {field}=NULL WHERE guild_id= ?", (gid,))
-            await db.commit()
-    else:
-        await _cfg_set_int(gid, field, int(rid))
-
 # ==================== END CONFIG HELPERS + SCHEMA ====================
 
 # ==================== WELCOME PROMPT ====================
@@ -3952,7 +3918,7 @@ async def sync_now(interaction: discord.Interaction):
 # Binder
 @bot.listen("on_ready")
 async def __bind_config_commands_and_sync():
-    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime, sync_now, setup_class_role, setup_class_role_id, clear_class_role, list_class_roles]
+    cmds = [setup_welcome, setup_roster, setup_role, welcome_post_cmd, start_roster_cmd, roster_repost_cmd, setup_uptime, sync_now]
     for g in bot.guilds:
         for cmd in cmds:
             try:
@@ -3964,51 +3930,6 @@ async def __bind_config_commands_and_sync():
             log.info(f"[sync] Config commands synced for guild {g.id}")
         except Exception as e:
             log.warning(f"[sync] {g.id}: {e}")
-
-# ---- Class role config commands ----
-@_ac_cfg.command(name="setup-class-role", description="Map a roster class to a role")
-@_ac_cfg.checks.has_permissions(manage_roles=True)
-async def setup_class_role(interaction: discord.Interaction, class_name: str, role: discord.Role):
-    gid = interaction.guild.id if interaction.guild else None
-    if not gid:
-        return await interaction.response.send_message("Guild not found.", ephemeral=True)
-    await set_class_role_id(gid, class_name, role.id)
-    await interaction.response.send_message(f"Mapped {_norm_class(class_name)} -> {role.mention}.", ephemeral=True)
-
-@_ac_cfg.command(name="setup-class-role-id", description="Map a roster class to a role by numeric ID")
-@_ac_cfg.checks.has_permissions(manage_roles=True)
-async def setup_class_role_id(interaction: discord.Interaction, class_name: str, role_id: int):
-    gid = interaction.guild.id if interaction.guild else None
-    if not gid:
-        return await interaction.response.send_message("Guild not found.", ephemeral=True)
-    role = interaction.guild.get_role(int(role_id))
-    if not role:
-        return await interaction.response.send_message("Role ID not found in this server.", ephemeral=True)
-    await set_class_role_id(gid, class_name, role.id)
-    await interaction.response.send_message(f"Mapped {_norm_class(class_name)} -> {role.mention}.", ephemeral=True)
-
-@_ac_cfg.command(name="clear-class-role", description="Clear a class->role mapping")
-@_ac_cfg.checks.has_permissions(manage_roles=True)
-async def clear_class_role(interaction: discord.Interaction, class_name: str):
-    gid = interaction.guild.id if interaction.guild else None
-    if not gid:
-        return await interaction.response.send_message("Guild not found.", ephemeral=True)
-    await set_class_role_id(gid, class_name, None)
-    await interaction.response.send_message(f"Cleared mapping for {_norm_class(class_name)}.", ephemeral=True)
-
-@_ac_cfg.command(name="list-class-roles", description="List current class->role mappings")
-@_ac_cfg.checks.has_permissions(manage_guild=True)
-async def list_class_roles(interaction: discord.Interaction):
-    gid = interaction.guild.id if interaction.guild else None
-    if not gid:
-        return await interaction.response.send_message("Guild not found.", ephemeral=True)
-    lines = []
-    for cname, field in _CLASS_ROLE_COLUMNS.items():
-        rid = await _cfg_get_int(gid, field)
-        role = interaction.guild.get_role(int(rid)) if rid else None
-        lines.append(f"{cname}: {role.mention if role else 'not set'}")
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
 # ==================== END MINIMAL CONFIG COMMANDS ====================
 
 # ==================== ROSTER INTAKE UI (required) ====================
@@ -4109,7 +4030,7 @@ class RosterModal(discord.ui.Modal, title="Start Roster"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
     main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
     alts = discord.ui.TextInput(label="Alts (name / level / class; or N/A)", style=discord.TextStyle.paragraph, required=False, placeholder="N/A", max_length=400)
-    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
+    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or-05:00", required=False, max_length=64)
 
     def __init__(self, selected_class: str):
         super().__init__(timeout=600)
@@ -4608,7 +4529,7 @@ class RosterStartView(discord.ui.View):
 class RosterModal(discord.ui.Modal, title="Start Roster — Step 1/2"):
     main_name = discord.ui.TextInput(label="Main name", placeholder="Blunderbuss", required=True, max_length=32)
     main_level = discord.ui.TextInput(label="Main level (1â€“250)", placeholder="215", required=True, max_length=3)
-    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or UTC-05:00", required=False, max_length=64)
+    timezone = discord.ui.TextInput(label="Timezone (IANA or offset)", placeholder="America/Chicago or-05:00", required=False, max_length=64)
 
     def __init__(self, selected_class: str):
         super().__init__(timeout=600)
@@ -5511,7 +5432,7 @@ async def _build_timer_embeds_compact(guild: dm.Guild, categories: _List[str]):
             if show_eta and (ts - now) > 0:
                 try:
                     from datetime import datetime, timezone
-                    seg += f" · {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
+                    seg += f" · {datetime.fromtimestamp(ts, tz=timezone.utc).strftime('ETA %H:%M')}"
                 except Exception:
                     pass
             lines.append(seg)
@@ -5647,7 +5568,7 @@ async def _build_timer_embeds_compact(guild, categories):
                 seg = f"• **{nm}** — `{t}` · {stat}"
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
-                    seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
+                    seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M')}"
                 lines.append(seg)
             if nada:
                 lines.append("*Lost (-Nada)*")
@@ -5748,7 +5669,7 @@ async def _build_timer_embeds_count_missing_only(guild: dm.Guild, categories: Li
                 seg = (f"• **{nm}** `{t}`" + (f" · {_ws}" if _inc else ""))
                 if show_eta and delta > 0:
                     from datetime import datetime, timezone
-                    seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M UTC')}"
+                    seg += f" · {datetime.fromtimestamp(tts, tz=timezone.utc).strftime('ETA %H:%M')}"
                 lines.append(seg)
 
             if missing_count:
