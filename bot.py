@@ -11,6 +11,7 @@
 # - Subscription ping helper (separate designated channel supported)
 
 from __future__ import annotations
+import time
 
 # --- Panel sanitizers (names + emojis) ---
 _MOJIBAKE_HINTS = ("Ã", "â", "ðŸ")
@@ -2878,13 +2879,9 @@ async def _start_with_backoff(token: str):
     Includes extra safety checks to avoid unclosed connectors during retries.
     """
     import aiohttp, os, asyncio, logging, discord
-
-    # Error check 1: token presence
     if not token or not isinstance(token, str):
         logging.error("[login] TOKEN is empty or invalid. Abort.")
         raise ValueError("Missing TOKEN")
-
-    # Error check 2: backoff bounds
     try:
         delay = int(os.getenv("LOGIN_BACKOFF_SECONDS", "60"))
     except Exception:
@@ -2895,17 +2892,15 @@ async def _start_with_backoff(token: str):
         max_delay = 900
     delay = 60 if delay < 1 else delay
     max_delay = 900 if max_delay < delay else max_delay
-
     while True:
         try:
             await bot.start(token)
-            return  # Normal shutdown
+            return
         except discord.errors.HTTPException as e:
             msg = f"{e}"
             status = getattr(e, "status", None)
             if status == 429 or "1015" in msg or "rate limited" in msg.lower():
                 logging.error(f"[login] Rate limited at login (status={status}). Backoff {delay}s.")
-                # Error check 3: close client cleanly to prevent 'Unclosed connector'
                 try:
                     await bot.close()
                 except Exception:
@@ -2927,6 +2922,54 @@ async def _start_with_backoff(token: str):
             await asyncio.sleep(delay)
             delay = min(max_delay, max(60, delay * 2))
             continue
+
+
+# === Global send guard to handle Cloudflare 1015 / HTTP 429 during sends ===
+import asyncio, logging, os, time, discord
+from discord.errors import HTTPException as _HTTPEx
+if not hasattr(discord, "_safe_send_installed"):
+    _ORIG_SEND_FN = discord.abc.Messageable.send
+    _BARRIER_LOCK = asyncio.Lock()
+    _CLOUD_BARRIER = {'until': 0.0,'delay': int(os.getenv('SEND_BACKOFF_SECONDS', '120')),'max': int(os.getenv('SEND_BACKOFF_MAX_SECONDS', '1800')),}
+    async def _barrier_sleep_now():
+        async with _BARRIER_LOCK:
+            remaining = _CLOUD_BARRIER['until'] - time.time()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+    async def _trip_barrier():
+        async with _BARRIER_LOCK:
+            now = time.time()
+            delay = _CLOUD_BARRIER['delay']
+            _CLOUD_BARRIER['until'] = max(_CLOUD_BARRIER['until'], now) + delay
+            _CLOUD_BARRIER['delay'] = min(_CLOUD_BARRIER['max'], max(60, delay * 2))
+    async def _safe_send_core(target, *args, **kwargs):
+        await _barrier_sleep_now()
+        tries = max(1, int(os.getenv('SEND_RETRIES', '3')))
+        last_err = None
+        for _ in range(tries):
+            try:
+                return await _ORIG_SEND_FN(target, *args, **kwargs)
+            except _HTTPEx as e:
+                s = getattr(e, "status", None)
+                txt = str(e)
+                if s == 429 or "1015" in txt or "rate limited" in txt.lower():
+                    logging.warning(f"[send] Rate limited (status={s}). Backoff {_CLOUD_BARRIER['delay']}s.")
+                    await _trip_barrier()
+                    await asyncio.sleep(min(10, _CLOUD_BARRIER['delay']))
+                    last_err = e
+                    continue
+                last_err = e
+                break
+            except Exception as e:
+                last_err = e
+                break
+        logging.error(f"[send] Giving up after {tries} tries: {last_err}")
+        return None
+    async def _wrapped_send(self, *args, **kwargs):
+        return await _safe_send_core(self, *args, **kwargs)
+    discord.abc.Messageable.send = _wrapped_send
+    discord._safe_send_installed = True
+    logging.info("[send] Safe send wrapper installed.")
 
 async def main():
     loop = asyncio.get_running_loop()
