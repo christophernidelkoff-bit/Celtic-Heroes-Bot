@@ -2870,6 +2870,64 @@ def _persist_offline_since_on_exit():
         pass
 
 # -------- RUN --------
+
+# === Login backoff to avoid Cloudflare 1015 / HTTP 429 crash loops ===
+async def _start_with_backoff(token: str):
+    """Guarded login. Closes aiohttp connector and backs off on 429/1015.
+    Env knobs: LOGIN_BACKOFF_SECONDS (default 60), LOGIN_BACKOFF_MAX_SECONDS (default 900)
+    Includes extra safety checks to avoid unclosed connectors during retries.
+    """
+    import aiohttp, os, asyncio, logging, discord
+
+    # Error check 1: token presence
+    if not token or not isinstance(token, str):
+        logging.error("[login] TOKEN is empty or invalid. Abort.")
+        raise ValueError("Missing TOKEN")
+
+    # Error check 2: backoff bounds
+    try:
+        delay = int(os.getenv("LOGIN_BACKOFF_SECONDS", "60"))
+    except Exception:
+        delay = 60
+    try:
+        max_delay = int(os.getenv("LOGIN_BACKOFF_MAX_SECONDS", "900"))
+    except Exception:
+        max_delay = 900
+    delay = 60 if delay < 1 else delay
+    max_delay = 900 if max_delay < delay else max_delay
+
+    while True:
+        try:
+            await bot.start(token)
+            return  # Normal shutdown
+        except discord.errors.HTTPException as e:
+            msg = f"{e}"
+            status = getattr(e, "status", None)
+            if status == 429 or "1015" in msg or "rate limited" in msg.lower():
+                logging.error(f"[login] Rate limited at login (status={status}). Backoff {delay}s.")
+                # Error check 3: close client cleanly to prevent 'Unclosed connector'
+                try:
+                    await bot.close()
+                except Exception:
+                    pass
+                await asyncio.sleep(delay)
+                delay = min(max_delay, max(60, delay * 2))
+                continue
+            try:
+                await bot.close()
+            except Exception:
+                pass
+            raise
+        except aiohttp.ClientError as e:
+            logging.error(f"[login] Network error: {e}. Backoff {delay}s.")
+            try:
+                await bot.close()
+            except Exception:
+                pass
+            await asyncio.sleep(delay)
+            delay = min(max_delay, max(60, delay * 2))
+            continue
+
 async def main():
     loop = asyncio.get_running_loop()
     for s in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
@@ -2879,7 +2937,7 @@ async def main():
             except NotImplementedError:
                 pass
     try:
-        await bot.start(TOKEN)
+        await _start_with_backoff(TOKEN)
     except KeyboardInterrupt:
         await graceful_shutdown()
 
