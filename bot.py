@@ -12,51 +12,6 @@
 
 from __future__ import annotations
 
-
-# === Rate-limit hardening helpers (non-breaking) ===
-# Serialize high-volume reaction adds per guild and delay between requests.
-try:
-    _ADD_REACT_LOCKS
-except NameError:
-    _ADD_REACT_LOCKS: dict[int, asyncio.Lock] = {}
-
-def _lock_for_react(gid: int):
-    lock = _ADD_REACT_LOCKS.get(gid)
-    if lock is None:
-        lock = asyncio.Lock()
-        _ADD_REACT_LOCKS[gid] = lock
-    return lock
-
-async def add_reaction_slow(message, emoji):
-    """Wrapper for message.add_reaction with per-guild serialization and delay.
-    Adds three extra safety checks: message is not None, emoji is truthy, and API errors are logged not raised.
-    """
-    if message is None:
-        return
-    if not emoji:
-        return
-    gid = getattr(getattr(message, "guild", None), "id", 0)
-    lock = _lock_for_react(gid)
-    async with lock:
-        try:
-            await add_reaction_slow(message, emoji)
-        except Exception as e:
-            try:
-                log  # type: ignore
-            except Exception:
-                pass
-            else:
-                try:
-                    log.warning(f"Add reaction failed: {e}")
-                except Exception:
-                    pass
-        # Slow down to avoid 429 and Cloudflare 1015 edges
-        try:
-            await asyncio.sleep(0.5)
-        except Exception:
-            pass
-# === End helpers ===
-
 # --- Panel sanitizers (names + emojis) ---
 _MOJIBAKE_HINTS = ("Ã", "â", "ðŸ")
 def _fix_name(s):
@@ -974,7 +929,7 @@ async def refresh_subscription_messages(guild: discord.Guild):
                     if e and e not in existing and e not in cleaned:
                         cleaned.append(e)
                 for e in cleaned:
-                    await add_reaction_slow(message, e)
+                    await message.add_reaction(e)
                     await asyncio.sleep(0.2)
             except Exception as e:
                 log.warning(f"Adding reactions failed for {cat}: {e}")
@@ -1346,11 +1301,9 @@ async def on_ready():
     # Rebuild panels after loops started
     for g in bot.guilds:
         try:
-            if os.getenv("ALLOW_ON_READY_REFRESH") == "1":
-                await refresh_subscription_messages(g)
+            await refresh_subscription_messages(g)
         except Exception as e:
-            if os.getenv("ALLOW_ON_READY_REFRESH") == "1":
-                log.warning(f"[ready] refresh_subscription_messages failed for g{g.id}: {e}")
+            log.warning(f"[ready] refresh_subscription_messages failed for g{g.id}: {e}")
 
     # Sync slash
     try:
@@ -2817,7 +2770,7 @@ async def roles_panel(interaction: discord.Interaction,
         await db.commit()
     for em, _, _ in parsed:
         try:
-            await add_reaction_slow(msg, em)
+            await msg.add_reaction(em)
             await asyncio.sleep(0.2)
         except Exception:
             pass
@@ -2917,6 +2870,64 @@ def _persist_offline_since_on_exit():
         pass
 
 # -------- RUN --------
+
+# === Login backoff to avoid Cloudflare 1015 / HTTP 429 crash loops ===
+async def _start_with_backoff(token: str):
+    """Guarded login. Closes aiohttp connector and backs off on 429/1015.
+    Env knobs: LOGIN_BACKOFF_SECONDS (default 60), LOGIN_BACKOFF_MAX_SECONDS (default 900)
+    Includes extra safety checks to avoid unclosed connectors during retries.
+    """
+    import aiohttp, os, asyncio, logging, discord
+
+    # Error check 1: token presence
+    if not token or not isinstance(token, str):
+        logging.error("[login] TOKEN is empty or invalid. Abort.")
+        raise ValueError("Missing TOKEN")
+
+    # Error check 2: backoff bounds
+    try:
+        delay = int(os.getenv("LOGIN_BACKOFF_SECONDS", "60"))
+    except Exception:
+        delay = 60
+    try:
+        max_delay = int(os.getenv("LOGIN_BACKOFF_MAX_SECONDS", "900"))
+    except Exception:
+        max_delay = 900
+    delay = 60 if delay < 1 else delay
+    max_delay = 900 if max_delay < delay else max_delay
+
+    while True:
+        try:
+            await bot.start(token)
+            return  # Normal shutdown
+        except discord.errors.HTTPException as e:
+            msg = f"{e}"
+            status = getattr(e, "status", None)
+            if status == 429 or "1015" in msg or "rate limited" in msg.lower():
+                logging.error(f"[login] Rate limited at login (status={status}). Backoff {delay}s.")
+                # Error check 3: close client cleanly to prevent 'Unclosed connector'
+                try:
+                    await bot.close()
+                except Exception:
+                    pass
+                await asyncio.sleep(delay)
+                delay = min(max_delay, max(60, delay * 2))
+                continue
+            try:
+                await bot.close()
+            except Exception:
+                pass
+            raise
+        except aiohttp.ClientError as e:
+            logging.error(f"[login] Network error: {e}. Backoff {delay}s.")
+            try:
+                await bot.close()
+            except Exception:
+                pass
+            await asyncio.sleep(delay)
+            delay = min(max_delay, max(60, delay * 2))
+            continue
+
 async def main():
     loop = asyncio.get_running_loop()
     for s in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
@@ -2926,7 +2937,7 @@ async def main():
             except NotImplementedError:
                 pass
     try:
-        await bot.start(TOKEN)
+        await _start_with_backoff(TOKEN)
     except KeyboardInterrupt:
         await graceful_shutdown()
 
