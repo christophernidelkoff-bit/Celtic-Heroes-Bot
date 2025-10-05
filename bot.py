@@ -468,6 +468,7 @@ def preflight_migrate_sync():
 from datetime import datetime, timezone as _tz_m
 
 def _safe_epoch(dt_or_epoch):
+    # Error checks: None, wrong type, out-of-range epoch
     if dt_or_epoch is None:
         raise ValueError("timestamp is None")  # 1
     if isinstance(dt_or_epoch, datetime):
